@@ -2,6 +2,7 @@ import numpy as np
 from functools import partial
 
 from scripts.generate_data import generate_hierarchical_gaussian_mixture
+from samplers.parallel_tempering import ParallelTemperingMCMC
 from samplers.teleporting_mcmc import (
     TeleportingMCMC,
     gaussian_q_density,
@@ -21,6 +22,11 @@ def gmm_density(x, pi, mu, sigma2):
             2 * np.pi * sk2
         )
     return float(val)
+
+
+def print_rate_vector(label, values):
+    formatted = ", ".join(f"{v:.3f}" for v in values)
+    print(f"  {label}: [{formatted}]")
 
 def main():
     rng = np.random.default_rng(221)
@@ -96,7 +102,44 @@ def main():
     )
     print(f"  Estimated TVD: {tvd:.4f}")
 
-    # ---- 5. Vanilla MCMC (PyMC / NUTS) ---------------------------
+    # ---- 5. Parallel Tempering -----------------------------------
+    print("\nRunning Parallel Tempering...")
+    inverse_temperatures = [1.0, 0.7, 0.5, 0.35]
+    pt_initial_states = rng.normal(
+        loc=rng.choice(data["mu"], size=len(inverse_temperatures)),
+        scale=1.0,
+    ).reshape(len(inverse_temperatures), 1)
+
+    pt_sampler = ParallelTemperingMCMC(
+        pi_fn=pi_fn,
+        inverse_temperatures=inverse_temperatures,
+        proposal_scale=proposal_sigma,
+        rng=rng,
+    )
+    pt_result = pt_sampler.run(
+        pt_initial_states,
+        num_iter=num_iter,
+        swap_interval=1,
+    )
+
+    print_rate_vector("Local acceptance rates", pt_result["local_acceptance_rates"])
+    print_rate_vector("Swap acceptance rates", pt_result["swap_acceptance_rates"])
+
+    cold_chain = pt_result["cold_samples"].transpose(1, 0, 2)
+    cold_chain_post = cold_chain[:, warmup:, :]
+
+    print("\nDiagnostics (Parallel Tempering cold chain):")
+    summary(cold_chain_post, param_names=["x"])
+
+    tvd_pt = plot_against_truth(
+        cold_chain_post,
+        pi_fn=pi_fn,
+        param_name="x",
+        save_path="results/density_vs_truth_parallel_tempering.png",
+    )
+    print(f"  Estimated TVD: {tvd_pt:.4f}")
+
+    # ---- 6. Vanilla MCMC (PyMC / NUTS) ---------------------------
     print("\nRunning Vanilla MCMC (PyMC NUTS)...")
     vanilla = VanillaMCMC(
         pi=data["pi"],
@@ -122,7 +165,12 @@ def main():
     )
     print(f"  Estimated TVD: {tvd_vanilla:.4f}")
 
-    print(f"\nTVD comparison — Teleporting: {tvd:.4f}  |  Vanilla NUTS: {tvd_vanilla:.4f}")
+    print(
+        "\nTVD comparison — "
+        f"Teleporting: {tvd:.4f}  |  "
+        f"Parallel Tempering: {tvd_pt:.4f}  |  "
+        f"Vanilla NUTS: {tvd_vanilla:.4f}"
+    )
 
 if __name__ == "__main__":
     main()
