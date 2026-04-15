@@ -75,3 +75,85 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ------------------------------------------------------------------
+# Fixed scenarios for benchmarking samplers
+# ------------------------------------------------------------------
+
+def _make_gmm_pi_fn(pi, mu, sigma2):
+    """Return a callable for the unnormalized 1-D GMM density."""
+    pi = np.asarray(pi, dtype=float)
+    mu = np.asarray(mu, dtype=float)
+    sigma2 = np.asarray(sigma2, dtype=float)
+
+    def pi_fn(x):
+        x = np.asarray(x).ravel()
+        val = 0.0
+        for pk, mk, sk2 in zip(pi, mu, sigma2):
+            val += pk * np.exp(-0.5 * (x[0] - mk) ** 2 / sk2) / np.sqrt(
+                2.0 * np.pi * sk2
+            )
+        return float(val)
+
+    return pi_fn
+
+
+def _gmm_scenario(label, slug, pi, mu, sigma2, n, rng):
+    pi = np.asarray(pi, dtype=float)
+    mu = np.asarray(mu, dtype=float)
+    sigma2 = np.asarray(sigma2, dtype=float)
+    K = len(mu)
+    z = rng.choice(K, size=n, p=pi)
+    y = np.array([rng.normal(mu[k], np.sqrt(sigma2[k])) for k in z])
+    pad = 4.0 * np.sqrt(sigma2.max())
+    return {
+        "label": label,
+        "slug": slug,
+        "pi": pi,
+        "mu": mu,
+        "sigma2": sigma2,
+        "y": y,
+        "z": z,
+        "pi_fn": _make_gmm_pi_fn(pi, mu, sigma2),
+        "x_range": (float(mu.min() - pad), float(mu.max() + pad)),
+    }
+
+
+def make_scenarios(rng, n=500):
+    """
+    Three 1-D GMM scenarios with increasing mode separation.
+
+    close      : modes at -2, 0, 2  — partly overlapping
+    separated  : modes at -6, 0, 6  — clearly separated
+    far        : modes at -12, 12   — extreme bimodal gap
+    """
+    return [
+        _gmm_scenario(
+            label="close modes (sep=2)",
+            slug="close",
+            pi=[1 / 3, 1 / 3, 1 / 3],
+            mu=[-2.0, 0.0, 2.0],
+            sigma2=[0.3, 0.3, 0.3],
+            n=n,
+            rng=rng,
+        ),
+        _gmm_scenario(
+            label="separated modes (sep=6)",
+            slug="separated",
+            pi=[0.4, 0.2, 0.4],
+            mu=[-6.0, 0.0, 6.0],
+            sigma2=[0.5, 0.5, 0.5],
+            n=n,
+            rng=rng,
+        ),
+        _gmm_scenario(
+            label="far modes (sep=12)",
+            slug="far",
+            pi=[0.5, 0.5],
+            mu=[-12.0, 12.0],
+            sigma2=[1.0, 1.0],
+            n=n,
+            rng=rng,
+        ),
+    ]

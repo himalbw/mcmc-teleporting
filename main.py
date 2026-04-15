@@ -1,176 +1,128 @@
 import numpy as np
-from functools import partial
 
-from scripts.generate_data import generate_hierarchical_gaussian_mixture
-from samplers.parallel_tempering import ParallelTemperingMCMC
-from samplers.teleporting_mcmc import (
-    TeleportingMCMC,
-    gaussian_q_density,
-    gaussian_q_sample,
-)
+from scripts.generate_data import make_scenarios
+from samplers.parallel_tempering import ParallelTemperingMCMC, grid_search_temperatures
+from samplers.teleporting_mcmc import TeleportingMCMC, gaussian_q_density, gaussian_q_sample
 from samplers.vanilla_mcmc import VanillaMCMC
 from diagnostics import summary, plot_against_truth
 
 
-def gmm_density(x, pi, mu, sigma2):
-    """Unnormalised GMM density at scalar x."""
-    x = np.asarray(x).ravel()
-    assert x.size == 1, "This demo target is 1-D"
-    val = 0.0
-    for pk, mk, sk2 in zip(pi, mu, sigma2):
-        val += pk * np.exp(-0.5 * (x[0] - mk) ** 2 / sk2) / np.sqrt(
-            2 * np.pi * sk2
-        )
-    return float(val)
+# ------------------------------------------------------------------
+# Per-scenario runner
+# ------------------------------------------------------------------
 
+def run_scenario(scenario, rng, num_iter=2000):
+    slug     = scenario["slug"]
+    pi_fn    = scenario["pi_fn"]
+    mu       = scenario["mu"]
+    sigma2   = scenario["sigma2"]
+    x_range  = scenario["x_range"]
+    warmup   = num_iter // 4
+    N_walkers = 8
 
-def print_rate_vector(label, values):
-    formatted = ", ".join(f"{v:.3f}" for v in values)
-    print(f"  {label}: [{formatted}]")
+    # Proposal sigma scaled to component spread
+    proposal_sigma = float(np.sqrt(sigma2.max()) * 1.5)
 
-def main():
-    rng = np.random.default_rng(221)
-
-    # 1. Generate Data
-    print("Generating hierarchical GMM data...")
-    data = generate_hierarchical_gaussian_mixture(
-        n=500,
-        K=3,
-        alpha=[1.0, 1.0, 1.0],
-        a=3.0,
-        b=2.0,
-        c=3.0,
-        d=4.0,
-        m0=0.0,
-        s0_sq=25.0,
-        rng=rng,
-    )
-    print(f"  True mu:     {data['mu'].round(3)}")
-    print(f"  True pi:     {data['pi'].round(3)}")
-    print(f"  True sigma2: {data['sigma2'].round(3)}")
-    print()
-
-    # 2. Define target using true params
-    pi_fn = partial(
-        gmm_density, pi=data["pi"], mu=data["mu"], sigma2=data["sigma2"]
-    )
-
-    #3. Gaussian proposal with sigma = 1.0
-    proposal_sigma = 1.0
     q_sample_fn  = lambda x, rng: gaussian_q_sample(x, proposal_sigma, rng)
     q_density_fn = lambda x, mean: gaussian_q_density(x, mean, proposal_sigma)
 
-    # 4. Teleporting MCMC
-    print("Running Teleporting MCMC...")
-    N_walkers = 8
-    num_iter  = 2000
+    # Shared x0: walkers spread across modes
+    mode_idx = rng.integers(len(mu), size=N_walkers)
+    x0 = rng.normal(loc=mu[mode_idx], scale=np.sqrt(sigma2.mean())).reshape(N_walkers, 1)
 
-    # Initialise walkers: assign each walker to a random mode
-    mode_idx = rng.integers(len(data["mu"]), size=N_walkers)
-    x0 = rng.normal(loc=data["mu"][mode_idx], scale=1.0).reshape(N_walkers, 1)
-
-    sampler = TeleportingMCMC(
-        pi_fn=pi_fn,
-        q_sample_fn=q_sample_fn,
-        q_density_fn=q_density_fn,
-        rng=rng,
-    )
-    result = sampler.run(x0, num_iter)
-
-    print(f"  Acceptance rate:        {result['acceptance_rate']:.3f}")
-    print(f"  Teleport proposal rate: {result['teleport_proposal_rate']:.3f}")
-    print(f"  Teleport accept rate:   {result['teleport_accept_rate']:.3f}")
-    print()
-
-    # Diagnostics
-    # samples shape: (num_iter+1, N_walkers, 1)
-    # Treat walkers as chains → (N_walkers, num_iter+1, 1)
-    samples = result["samples"]                       # (T+1, N, 1)
-    chains  = samples.transpose(1, 0, 2)             # (N, T+1, 1)
-    warmup = num_iter // 4
-    chains_post = chains[:, warmup:, :]             # discard burn-in
-
-    print("Diagnostics (post burn-in):")
-    summary(chains_post, param_names=["x"])
-
-    # Plot true density vs sampler KDE with TVD
-    tvd = plot_against_truth(
-        chains_post,
-        pi_fn=pi_fn,
-        param_name="x",
-        save_path="results/density_vs_truth_teleport.png",
-    )
-    print(f"  Estimated TVD: {tvd:.4f}")
-
-    # ---- 5. Parallel Tempering -----------------------------------
-    print("\nRunning Parallel Tempering...")
-    inverse_temperatures = [1.0, 0.7, 0.5, 0.35]
-    pt_initial_states = rng.normal(
-        loc=rng.choice(data["mu"], size=len(inverse_temperatures)),
-        scale=1.0,
-    ).reshape(len(inverse_temperatures), 1)
-
-    pt_sampler = ParallelTemperingMCMC(
-        pi_fn=pi_fn,
-        inverse_temperatures=inverse_temperatures,
-        proposal_scale=proposal_sigma,
-        rng=rng,
-    )
-    pt_result = pt_sampler.run(
-        pt_initial_states,
-        num_iter=num_iter,
-        swap_interval=1,
-    )
-
-    print_rate_vector("Local acceptance rates", pt_result["local_acceptance_rates"])
-    print_rate_vector("Swap acceptance rates", pt_result["swap_acceptance_rates"])
-
-    cold_chain = pt_result["cold_samples"].transpose(1, 0, 2)
-    cold_chain_post = cold_chain[:, warmup:, :]
-
-    print("\nDiagnostics (Parallel Tempering cold chain):")
-    summary(cold_chain_post, param_names=["x"])
-
-    tvd_pt = plot_against_truth(
-        cold_chain_post,
-        pi_fn=pi_fn,
-        param_name="x",
-        save_path="results/density_vs_truth_parallel_tempering.png",
-    )
-    print(f"  Estimated TVD: {tvd_pt:.4f}")
-
-    # ---- 6. Vanilla MCMC (PyMC / NUTS) ---------------------------
-    print("\nRunning Vanilla MCMC (PyMC NUTS)...")
-    vanilla = VanillaMCMC(
-        pi=data["pi"],
-        mu=data["mu"],
-        sigma2=data["sigma2"],
-        seed=221,
-    )
-    vanilla_result = vanilla.run(
-        num_draws=num_iter,
-        num_chains=4,
-        num_tune=num_iter // 4,
-        progressbar=False,
-    )
-
-    print("\nDiagnostics (Vanilla MCMC):")
-    summary(vanilla_result["samples"], param_names=["x"])
-
-    tvd_vanilla = plot_against_truth(
-        vanilla_result["samples"],
-        pi_fn=pi_fn,
-        param_name="x",
-        save_path="results/density_vs_truth_vanilla.png",
-    )
-    print(f"  Estimated TVD: {tvd_vanilla:.4f}")
+    # ---- 1. Teleporting MCMC ------------------------------------
+    print("  [Teleporting MCMC]")
+    t_sampler = TeleportingMCMC(pi_fn, q_sample_fn, q_density_fn, rng=rng)
+    t_result  = t_sampler.run(x0, num_iter)
+    t_chains  = t_result["samples"].transpose(1, 0, 2)[:, warmup:, :]
 
     print(
-        "\nTVD comparison — "
-        f"Teleporting: {tvd:.4f}  |  "
-        f"Parallel Tempering: {tvd_pt:.4f}  |  "
-        f"Vanilla NUTS: {tvd_vanilla:.4f}"
+        f"    acceptance={t_result['acceptance_rate']:.3f}  "
+        f"teleport_proposal={t_result['teleport_proposal_rate']:.3f}  "
+        f"teleport_accept={t_result['teleport_accept_rate']:.3f}"
     )
+    summary(t_chains, param_names=["x"])
+    tvd_t = plot_against_truth(
+        t_chains, pi_fn, param_name="x", x_range=x_range,
+        save_path=f"results/{slug}_teleporting.png",
+    )
+    print(f"    TVD = {tvd_t:.4f}")
+
+    # ---- 2. Parallel Tempering (grid search then full run) -------
+    print("\n  [Parallel Tempering — grid search]")
+    best_betas, gs_results = grid_search_temperatures(
+        pi_fn=pi_fn,
+        x0_single=x0[0],
+        num_replicas_grid=[3, 4, 5],
+        beta_min_grid=[0.01, 0.05, 0.1, 0.2, 0.5],
+        num_iter=400,
+        proposal_scale=proposal_sigma,
+        rng=rng,
+        verbose=True,
+    )
+
+    print(f"\n  [Parallel Tempering — full run, best schedule]")
+    pt_x0    = np.tile(x0[0], (len(best_betas), 1))
+    pt_sampler = ParallelTemperingMCMC(pi_fn, best_betas, proposal_scale=proposal_sigma, rng=rng)
+    pt_result  = pt_sampler.run(pt_x0, num_iter=num_iter)
+    cold_chain = pt_result["cold_samples"].transpose(1, 0, 2)[:, warmup:, :]
+
+    swap_str = ", ".join(f"{r:.3f}" for r in pt_result["swap_acceptance_rates"])
+    print(f"    swap_rates=[{swap_str}]")
+    summary(cold_chain, param_names=["x"])
+    tvd_pt = plot_against_truth(
+        cold_chain, pi_fn, param_name="x", x_range=x_range,
+        save_path=f"results/{slug}_parallel_tempering.png",
+    )
+    print(f"    TVD = {tvd_pt:.4f}")
+
+    # ---- 3. Vanilla MCMC (PyMC / NUTS) --------------------------
+    print("\n  [Vanilla MCMC — PyMC NUTS]")
+    vanilla   = VanillaMCMC(pi=scenario["pi"], mu=mu, sigma2=sigma2, seed=221)
+    v_result  = vanilla.run(num_draws=num_iter, num_chains=4, num_tune=warmup, progressbar=False)
+    summary(v_result["samples"], param_names=["x"])
+    tvd_v = plot_against_truth(
+        v_result["samples"], pi_fn, param_name="x", x_range=x_range,
+        save_path=f"results/{slug}_vanilla.png",
+    )
+    print(f"    TVD = {tvd_v:.4f}")
+
+    return {"teleporting": tvd_t, "parallel_tempering": tvd_pt, "vanilla": tvd_v}
+
+
+# ------------------------------------------------------------------
+# Main
+# ------------------------------------------------------------------
+
+def main():
+    rng      = np.random.default_rng(221)
+    num_iter = 2000
+    scenarios = make_scenarios(rng)
+
+    all_tvd = {}
+    for scenario in scenarios:
+        print(f"\n{'='*64}")
+        print(f"SCENARIO: {scenario['label']}")
+        print(
+            f"  mu={scenario['mu']}  "
+            f"sigma2={scenario['sigma2'].round(2)}  "
+            f"pi={scenario['pi'].round(2)}"
+        )
+        print(f"{'='*64}")
+        all_tvd[scenario["label"]] = run_scenario(scenario, rng, num_iter)
+
+    # Final comparison table
+    print(f"\n{'='*64}")
+    print("FINAL TVD COMPARISON")
+    print(f"{'='*64}")
+    print(f"{'Scenario':<30}  {'Teleporting':>12}  {'PT':>8}  {'Vanilla':>8}")
+    print("-" * 64)
+    for label, tvds in all_tvd.items():
+        print(
+            f"{label:<30}  {tvds['teleporting']:>12.4f}  "
+            f"{tvds['parallel_tempering']:>8.4f}  {tvds['vanilla']:>8.4f}"
+        )
+
 
 if __name__ == "__main__":
     main()
