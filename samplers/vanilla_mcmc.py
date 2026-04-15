@@ -1,7 +1,6 @@
 import numpy as np
 import pymc as pm
 
-
 class VanillaMCMC:
     """
     PyMC-based sampler for a Gaussian mixture target.
@@ -20,7 +19,6 @@ class VanillaMCMC:
     seed : int, optional
         Random seed passed to pm.sample.
     """
-
     def __init__(self, pi, mu, sigma2, seed=None):
         self.pi = np.asarray(pi, dtype=float)
         self.mu = np.asarray(mu, dtype=float)
@@ -28,31 +26,6 @@ class VanillaMCMC:
         self.seed = seed
 
     def run(self, num_draws=1000, num_chains=4, num_tune=500, progressbar=True):
-        """
-        Sample from the mixture target.
-
-        Parameters
-        ----------
-        num_draws : int
-            Posterior draws per chain (after tuning).
-        num_chains : int
-            Number of independent chains. Each chain maps to one "walker"
-            for comparability with TeleportingMCMC diagnostics.
-        num_tune : int
-            Number of tuning (warm-up) steps; discarded by PyMC automatically.
-        progressbar : bool
-
-        Returns
-        -------
-        dict with keys:
-            samples    : ndarray (num_chains, num_draws, 1)
-                         Shape is compatible with diagnostics.summary and
-                         plot_against_truth.
-            trace      : arviz.InferenceData
-                         Full PyMC trace for any ArviZ post-processing.
-            num_draws  : int
-            num_chains : int
-        """
         with pm.Model():
             pm.NormalMixture(
                 "x",
