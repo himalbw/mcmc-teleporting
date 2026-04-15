@@ -39,3 +39,4 @@ htmlcov/
 # Editors
 .vscode/
 .idea/
+.claude
