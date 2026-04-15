@@ -7,7 +7,7 @@ from samplers.teleporting_mcmc import (
     gaussian_q_density,
     gaussian_q_sample,
 )
-from diagnostics import summary
+from diagnostics import summary, plot_against_truth
 
 
 def gmm_density(x, pi, mu, sigma2):
@@ -85,6 +85,15 @@ def main():
 
     print("Diagnostics (post burn-in):")
     summary(chains_post, param_names=["x"])
+
+    # Plot true density vs sampler KDE with TVD
+    tvd = plot_against_truth(
+        chains_post,
+        pi_fn=pi_fn,
+        param_name="x",
+        save_path="results/density_vs_truth.png",
+    )
+    print(f"  Estimated TVD: {tvd:.4f}")
 
     # ---- 5. Add more samplers here --------------------------------
 

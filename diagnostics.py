@@ -1,5 +1,5 @@
 """
-MCMC diagnostics: R-hat, ESS, 95% CI, and summary table.
+MCMC diagnostics: R-hat, ESS, 95% CI, summary table, and density plot vs truth.
 
 All functions expect chains of shape (num_chains, num_draws, num_params)
 or (num_chains, num_draws) for a single parameter.
@@ -183,3 +183,100 @@ def summary(chains, param_names=None):
             f"{lo[i]:>10.4f}  {hi[i]:>10.4f}  {rhat[i]:>7.3f}  {n_eff[i]:>8.1f}"
         )
     print(sep)
+
+
+# ------------------------------------------------------------------
+# Density plot vs truth + TVD estimate
+# ------------------------------------------------------------------
+
+def plot_against_truth(
+    chains,
+    pi_fn,
+    param_idx=0,
+    param_name=None,
+    x_range=None,
+    n_grid=500,
+    save_path=None,
+):
+    """
+    Plot the sampler's marginal density for one parameter against the true
+    target density, and annotate with an estimated Total Variation Distance.
+
+    TVD is estimated numerically on the same grid:
+        TVD = 0.5 * integral |p_true(x) - p_kde(x)| dx
+            ≈ 0.5 * sum |p - q| * dx
+
+    Parameters
+    ----------
+    chains : array-like, shape (M, N, P)
+    pi_fn : callable (array,) -> float
+        Unnormalized 1-D target density. Receives a length-1 array.
+    param_idx : int
+        Which parameter column to plot (default 0).
+    param_name : str, optional
+        Label for the x-axis.
+    x_range : (float, float), optional
+        Grid range. Defaults to [mean ± 4*std] of the samples.
+    n_grid : int
+        Number of grid points for numerical integration and true density.
+    save_path : str or Path, optional
+        If given, save the figure there instead of showing it.
+
+    Returns
+    -------
+    tvd : float
+        Estimated Total Variation Distance.
+    """
+    import matplotlib.pyplot as plt
+    from scipy.stats import gaussian_kde
+
+    chains = _ensure_3d(chains)
+    samples_1d = chains[:, :, param_idx].ravel()
+
+    if param_name is None:
+        param_name = f"param[{param_idx}]"
+
+    if x_range is None:
+        mu, sd = samples_1d.mean(), samples_1d.std()
+        x_range = (mu - 4 * sd, mu + 4 * sd)
+
+    grid = np.linspace(x_range[0], x_range[1], n_grid)
+    dx = grid[1] - grid[0]
+
+    # KDE of samples
+    kde = gaussian_kde(samples_1d, bw_method="scott")
+    p_kde = kde(grid)
+
+    # True density on grid, normalised to integrate to 1 over the grid
+    p_true_raw = np.array([pi_fn(np.array([v])) for v in grid])
+    p_true = p_true_raw / (p_true_raw.sum() * dx)
+
+    # TVD
+    tvd = 0.5 * np.sum(np.abs(p_true - p_kde)) * dx
+
+    # Plot
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ax.plot(grid, p_true, color="steelblue", lw=2, label="True target")
+    ax.plot(grid, p_kde,  color="tomato",    lw=2, label="Sampler KDE")
+    ax.fill_between(grid, p_true, p_kde, alpha=0.15, color="gray")
+    ax.set_xlabel(param_name)
+    ax.set_ylabel("Density")
+    ax.set_title("True vs sampled density")
+    ax.legend()
+    ax.text(
+        0.98, 0.95, f"TVD = {tvd:.4f}",
+        transform=ax.transAxes,
+        ha="right", va="top",
+        fontsize=10,
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="gray"),
+    )
+    fig.tight_layout()
+
+    if save_path is not None:
+        fig.savefig(save_path, dpi=150)
+        print(f"Saved plot to {save_path}")
+    else:
+        plt.show()
+
+    plt.close(fig)
+    return tvd
