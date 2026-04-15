@@ -7,6 +7,7 @@ from samplers.teleporting_mcmc import (
     gaussian_q_density,
     gaussian_q_sample,
 )
+from samplers.vanilla_mcmc import VanillaMCMC
 from diagnostics import summary, plot_against_truth
 
 
@@ -91,11 +92,37 @@ def main():
         chains_post,
         pi_fn=pi_fn,
         param_name="x",
-        save_path="results/density_vs_truth.png",
+        save_path="results/density_vs_truth_teleport.png",
     )
     print(f"  Estimated TVD: {tvd:.4f}")
 
-    # ---- 5. Add more samplers here --------------------------------
+    # ---- 5. Vanilla MCMC (PyMC / NUTS) ---------------------------
+    print("\nRunning Vanilla MCMC (PyMC NUTS)...")
+    vanilla = VanillaMCMC(
+        pi=data["pi"],
+        mu=data["mu"],
+        sigma2=data["sigma2"],
+        seed=221,
+    )
+    vanilla_result = vanilla.run(
+        num_draws=num_iter,
+        num_chains=4,
+        num_tune=num_iter // 4,
+        progressbar=False,
+    )
+
+    print("\nDiagnostics (Vanilla MCMC):")
+    summary(vanilla_result["samples"], param_names=["x"])
+
+    tvd_vanilla = plot_against_truth(
+        vanilla_result["samples"],
+        pi_fn=pi_fn,
+        param_name="x",
+        save_path="results/density_vs_truth_vanilla.png",
+    )
+    print(f"  Estimated TVD: {tvd_vanilla:.4f}")
+
+    print(f"\nTVD comparison — Teleporting: {tvd:.4f}  |  Vanilla NUTS: {tvd_vanilla:.4f}")
 
 if __name__ == "__main__":
     main()
