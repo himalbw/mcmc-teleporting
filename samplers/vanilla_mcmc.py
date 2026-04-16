@@ -27,12 +27,15 @@ class VanillaMCMC:
 
     def run(self, num_draws=1000, num_chains=4, num_tune=500, progressbar=True):
         with pm.Model():
-            pm.NormalMixture(
-                "x",
-                w=self.pi,
-                mu=self.mu,
-                sigma=np.sqrt(self.sigma2),
-            )
+            if len(self.pi) == 1:
+                pm.Normal("x", mu=self.mu[0], sigma=float(np.sqrt(self.sigma2[0])))
+            else:
+                pm.NormalMixture(
+                    "x",
+                    w=self.pi,
+                    mu=self.mu,
+                    sigma=np.sqrt(self.sigma2),
+                )
             trace = pm.sample(
                 draws=num_draws,
                 tune=num_tune,

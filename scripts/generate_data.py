@@ -122,38 +122,75 @@ def _gmm_scenario(label, slug, pi, mu, sigma2, n, rng):
 
 def make_scenarios(rng, n=500):
     """
-    Three 1-D GMM scenarios with increasing mode separation.
+    Seven 1-D benchmark scenarios for comparing MCMC samplers.
 
-    close      : modes at -2, 0, 2  — partly overlapping
-    separated  : modes at -6, 0, 6  — clearly separated
-    far        : modes at -12, 12   — extreme bimodal gap
+    1. standard          — N(0, 1), unimodal baseline
+    2. bimodal_close     — modes at ±2, slight overlap
+    3. bimodal_moderate  — modes at ±5, clearly separated
+    4. bimodal_large     — modes at ±12, extreme gap
+    5. unequal_weight    — modes at ±5, weights 0.2 / 0.8
+    6. different_scale   — modes at ±5, sigma 0.5 vs 1.5
+    7. trimodal          — three modes at -7, 0, 7
+
+    NOTE: "Correlated Gaussian" is a 2-D concept (correlation between
+    dimensions). It has been omitted here; extend to 2-D if needed.
     """
+    s = dict(n=n, rng=rng)
     return [
         _gmm_scenario(
-            label="close modes (sep=2)",
-            slug="close",
-            pi=[1 / 3, 1 / 3, 1 / 3],
-            mu=[-2.0, 0.0, 2.0],
-            sigma2=[0.3, 0.3, 0.3],
-            n=n,
-            rng=rng,
+            label="Standard Gaussian",
+            slug="standard",
+            pi=[1.0],
+            mu=[0.0],
+            sigma2=[1.0],
+            **s,
         ),
         _gmm_scenario(
-            label="separated modes (sep=6)",
-            slug="separated",
-            pi=[0.4, 0.2, 0.4],
-            mu=[-6.0, 0.0, 6.0],
-            sigma2=[0.5, 0.5, 0.5],
-            n=n,
-            rng=rng,
+            label="Bimodal — close (sep=4)",
+            slug="bimodal_close",
+            pi=[0.5, 0.5],
+            mu=[-2.0, 2.0],
+            sigma2=[0.5, 0.5],
+            **s,
         ),
         _gmm_scenario(
-            label="far modes (sep=12)",
-            slug="far",
+            label="Bimodal — moderate (sep=10)",
+            slug="bimodal_moderate",
+            pi=[0.5, 0.5],
+            mu=[-5.0, 5.0],
+            sigma2=[0.5, 0.5],
+            **s,
+        ),
+        _gmm_scenario(
+            label="Bimodal — large (sep=24)",
+            slug="bimodal_large",
             pi=[0.5, 0.5],
             mu=[-12.0, 12.0],
             sigma2=[1.0, 1.0],
-            n=n,
-            rng=rng,
+            **s,
+        ),
+        _gmm_scenario(
+            label="Unequal-weight bimodal (0.2 / 0.8)",
+            slug="unequal_weight",
+            pi=[0.2, 0.8],
+            mu=[-5.0, 5.0],
+            sigma2=[0.5, 0.5],
+            **s,
+        ),
+        _gmm_scenario(
+            label="Different-scale bimodal (σ=0.5 vs σ=1.5)",
+            slug="different_scale",
+            pi=[0.5, 0.5],
+            mu=[-5.0, 5.0],
+            sigma2=[0.25, 2.25],
+            **s,
+        ),
+        _gmm_scenario(
+            label="Trimodal (sep=7)",
+            slug="trimodal",
+            pi=[1 / 3, 1 / 3, 1 / 3],
+            mu=[-7.0, 0.0, 7.0],
+            sigma2=[0.5, 0.5, 0.5],
+            **s,
         ),
     ]
