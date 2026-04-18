@@ -1,196 +1,155 @@
 import numpy as np
-import pandas as pd
-
-def sample_inverse_gamma(shape, scale, rng):
-    gamma_draw = rng.gamma(shape=shape, scale=1.0 / scale)
-    return 1.0 / gamma_draw
-
-def generate_hierarchical_gaussian_mixture(
-    n,
-    K,
-    alpha,
-    a,
-    b,
-    c,
-    d,
-    m0,
-    s0_sq,
-    rng=None
-):
-    if rng is None:
-        rng = np.random.default_rng()
-
-    alpha = np.asarray(alpha, dtype=float)
-
-    m = rng.normal(loc=m0, scale=np.sqrt(s0_sq))
-    tau2 = sample_inverse_gamma(c, d, rng)
-
-    pi = rng.dirichlet(alpha)
-
-    mu = rng.normal(loc=m, scale=np.sqrt(tau2), size=K)
-    sigma2 = np.array([sample_inverse_gamma(a, b, rng) for _ in range(K)])
-
-    z = rng.choice(K, size=n, p=pi)
-
-    y = np.zeros(n)
-    for i in range(n):
-        k = z[i]
-        y[i] = rng.normal(loc=mu[k], scale=np.sqrt(sigma2[k]))
-
-    return {
-        "y": y,
-        "z": z,
-        "pi": pi,
-        "mu": mu,
-        "sigma2": sigma2,
-        "m": m,
-        "tau2": tau2,
-    }
-
-def main():
-    rng = np.random.default_rng(221)
-
-    out = generate_hierarchical_gaussian_mixture(
-        n=5000,
-        K=4,
-        alpha=[1.0, 1.0, 1.0],
-        a=3.0,
-        b=2.0,
-        c=3.0,
-        d=4.0,
-        m0=0.0,
-        s0_sq=25.0,
-        rng=rng
-    )
-
-    df = pd.DataFrame({
-        "y": out["y"],
-        "z": out["z"]
-    })
-
-    df.to_csv("data.csv", index=False)
-
-    print("saved data.csv")
-    print(df.head())
-
-if __name__ == "__main__":
-    main()
+from scipy.stats import multivariate_normal as _mvn_dist, norm as _norm_dist
 
 
 # ------------------------------------------------------------------
-# Fixed scenarios for benchmarking samplers
+# Density factories
 # ------------------------------------------------------------------
 
-def _make_gmm_pi_fn(pi, mu, sigma2):
-    """Return a callable for the unnormalized 1-D GMM density."""
-    pi = np.asarray(pi, dtype=float)
-    mu = np.asarray(mu, dtype=float)
-    sigma2 = np.asarray(sigma2, dtype=float)
+def _make_gmm_pi_fn_1d(pi, mu, sigma2):
+    """Unnormalised 1-D Gaussian mixture density."""
+    pi, mu, sigma2 = (np.asarray(a, dtype=float) for a in (pi, mu, sigma2))
 
     def pi_fn(x):
-        x = np.asarray(x).ravel()
-        val = 0.0
-        for pk, mk, sk2 in zip(pi, mu, sigma2):
-            val += pk * np.exp(-0.5 * (x[0] - mk) ** 2 / sk2) / np.sqrt(
-                2.0 * np.pi * sk2
-            )
-        return float(val)
+        x_val = float(np.asarray(x).ravel()[0])
+        return float(sum(
+            pk * np.exp(-0.5 * (x_val - mk) ** 2 / sk2) / np.sqrt(2.0 * np.pi * sk2)
+            for pk, mk, sk2 in zip(pi, mu, sigma2)
+        ))
 
     return pi_fn
 
 
-def _gmm_scenario(label, slug, pi, mu, sigma2, n, rng):
-    pi = np.asarray(pi, dtype=float)
-    mu = np.asarray(mu, dtype=float)
-    sigma2 = np.asarray(sigma2, dtype=float)
-    K = len(mu)
-    z = rng.choice(K, size=n, p=pi)
-    y = np.array([rng.normal(mu[k], np.sqrt(sigma2[k])) for k in z])
-    pad = 4.0 * np.sqrt(sigma2.max())
-    return {
-        "label": label,
-        "slug": slug,
-        "pi": pi,
-        "mu": mu,
-        "sigma2": sigma2,
-        "y": y,
-        "z": z,
-        "pi_fn": _make_gmm_pi_fn(pi, mu, sigma2),
-        "x_range": (float(mu.min() - pad), float(mu.max() + pad)),
-    }
+def _make_mvn_pi_fn(mean, cov):
+    """d-dimensional multivariate Gaussian density."""
+    rv = _mvn_dist(mean=mean, cov=cov)
+
+    def pi_fn(x):
+        return float(rv.pdf(np.asarray(x).ravel()))
+
+    return pi_fn
 
 
-def make_scenarios(rng, n=500):
+def _make_norm_marginal_pi_fn(mean, var):
+    """1-D marginal density for diagnostics of a 2-D scenario."""
+    rv = _norm_dist(loc=mean, scale=np.sqrt(var))
+
+    def pi_fn(x):
+        return float(rv.pdf(float(np.asarray(x).ravel()[0])))
+
+    return pi_fn
+
+
+# ------------------------------------------------------------------
+# Benchmark scenarios
+# ------------------------------------------------------------------
+
+def make_scenarios(rng):
     """
-    Seven 1-D benchmark scenarios for comparing MCMC samplers.
+    Six benchmark target distributions matching the project slide:
 
-    1. standard          — N(0, 1), unimodal baseline
-    2. bimodal_close     — modes at ±2, slight overlap
-    3. bimodal_moderate  — modes at ±5, clearly separated
-    4. bimodal_large     — modes at ±12, extreme gap
-    5. unequal_weight    — modes at ±5, weights 0.2 / 0.8
-    6. different_scale   — modes at ±5, sigma 0.5 vs 1.5
-    7. trimodal          — three modes at -7, 0, 7
+    1. standard          — N(0, 1)                                    [1-D]
+    2. correlated        — N(0, Σ), ρ=0.9, σ₁=3, σ₂=1               [2-D]
+    3. bimodal_moderate  — ½N(−5,1) + ½N(5,1)                        [1-D]
+    4. bimodal_large     — ½N(−15,1) + ½N(15,1)                      [1-D]
+    5. unequal_weight    — 0.9N(−5,1) + 0.1N(5,1)                    [1-D]
+    6. different_scale   — ½N(−5, 0.25) + ½N(5, 4)                   [1-D]
 
-    NOTE: "Correlated Gaussian" is a 2-D concept (correlation between
-    dimensions). It has been omitted here; extend to 2-D if needed.
+    Each entry contains:
+      label, slug, d, pi_fn, x_range (list of d tuples), proposal_sigma,
+      vanilla_type ("mixture_1d" | "mvnormal"),
+      and for "mixture_1d": pi, mu, sigma2
+      and for "mvnormal":   mu_vec, cov, marginal_pi_fns
     """
-    s = dict(n=n, rng=rng)
+    # Correlated Gaussian covariance: ρ=0.9, σ₁=3, σ₂=1
+    cov = np.array([[9.0, 2.7],
+                    [2.7, 1.0]])
+
     return [
-        _gmm_scenario(
-            label="Standard Gaussian",
-            slug="standard",
-            pi=[1.0],
-            mu=[0.0],
-            sigma2=[1.0],
-            **s,
+        # ---- 1. Standard Gaussian ----
+        dict(
+            label        = "Standard Gaussian",
+            slug         = "standard",
+            d            = 1,
+            pi_fn        = _make_gmm_pi_fn_1d([1.0], [0.0], [1.0]),
+            pi           = np.array([1.0]),
+            mu           = np.array([0.0]),
+            sigma2       = np.array([1.0]),
+            x_range      = [(-4.0, 4.0)],
+            proposal_sigma = 1.5,
+            vanilla_type = "mixture_1d",
         ),
-        _gmm_scenario(
-            label="Bimodal — close (sep=4)",
-            slug="bimodal_close",
-            pi=[0.5, 0.5],
-            mu=[-2.0, 2.0],
-            sigma2=[0.5, 0.5],
-            **s,
+
+        # ---- 2. Correlated Gaussian (2-D) ----
+        dict(
+            label        = "Correlated Gaussian (ρ=0.9)",
+            slug         = "correlated",
+            d            = 2,
+            pi_fn        = _make_mvn_pi_fn(np.zeros(2), cov),
+            mu_vec       = np.zeros(2),
+            cov          = cov,
+            x_range      = [(-9.0, 9.0), (-3.0, 3.0)],
+            marginal_pi_fns = [
+                _make_norm_marginal_pi_fn(0.0, 9.0),   # x[0] ~ N(0, 9)
+                _make_norm_marginal_pi_fn(0.0, 1.0),   # x[1] ~ N(0, 1)
+            ],
+            proposal_sigma = 4.5,   # 1.5 × σ_max = 1.5 × 3
+            vanilla_type = "mvnormal",
         ),
-        _gmm_scenario(
-            label="Bimodal — moderate (sep=10)",
-            slug="bimodal_moderate",
-            pi=[0.5, 0.5],
-            mu=[-5.0, 5.0],
-            sigma2=[0.5, 0.5],
-            **s,
+
+        # ---- 3. Bimodal — moderate separation ----
+        dict(
+            label        = "Bimodal — moderate (μ=±5)",
+            slug         = "bimodal_moderate",
+            d            = 1,
+            pi_fn        = _make_gmm_pi_fn_1d([0.5, 0.5], [-5.0, 5.0], [1.0, 1.0]),
+            pi           = np.array([0.5, 0.5]),
+            mu           = np.array([-5.0, 5.0]),
+            sigma2       = np.array([1.0, 1.0]),
+            x_range      = [(-10.0, 10.0)],
+            proposal_sigma = 1.5,
+            vanilla_type = "mixture_1d",
         ),
-        _gmm_scenario(
-            label="Bimodal — large (sep=24)",
-            slug="bimodal_large",
-            pi=[0.5, 0.5],
-            mu=[-12.0, 12.0],
-            sigma2=[1.0, 1.0],
-            **s,
+
+        # ---- 4. Bimodal — large separation ----
+        dict(
+            label        = "Bimodal — large (μ=±15)",
+            slug         = "bimodal_large",
+            d            = 1,
+            pi_fn        = _make_gmm_pi_fn_1d([0.5, 0.5], [-15.0, 15.0], [1.0, 1.0]),
+            pi           = np.array([0.5, 0.5]),
+            mu           = np.array([-15.0, 15.0]),
+            sigma2       = np.array([1.0, 1.0]),
+            x_range      = [(-20.0, 20.0)],
+            proposal_sigma = 1.5,
+            vanilla_type = "mixture_1d",
         ),
-        _gmm_scenario(
-            label="Unequal-weight bimodal (0.2 / 0.8)",
-            slug="unequal_weight",
-            pi=[0.2, 0.8],
-            mu=[-5.0, 5.0],
-            sigma2=[0.5, 0.5],
-            **s,
+
+        # ---- 5. Unequal-weight bimodal ----
+        dict(
+            label        = "Unequal-weight bimodal (0.9 / 0.1)",
+            slug         = "unequal_weight",
+            d            = 1,
+            pi_fn        = _make_gmm_pi_fn_1d([0.9, 0.1], [-5.0, 5.0], [1.0, 1.0]),
+            pi           = np.array([0.9, 0.1]),
+            mu           = np.array([-5.0, 5.0]),
+            sigma2       = np.array([1.0, 1.0]),
+            x_range      = [(-10.0, 10.0)],
+            proposal_sigma = 1.5,
+            vanilla_type = "mixture_1d",
         ),
-        _gmm_scenario(
-            label="Different-scale bimodal (σ=0.5 vs σ=1.5)",
-            slug="different_scale",
-            pi=[0.5, 0.5],
-            mu=[-5.0, 5.0],
-            sigma2=[0.25, 2.25],
-            **s,
-        ),
-        _gmm_scenario(
-            label="Trimodal (sep=7)",
-            slug="trimodal",
-            pi=[1 / 3, 1 / 3, 1 / 3],
-            mu=[-7.0, 0.0, 7.0],
-            sigma2=[0.5, 0.5, 0.5],
-            **s,
+
+        # ---- 6. Different-scale bimodal ----
+        dict(
+            label        = "Different-scale bimodal (σ=0.5 vs σ=2)",
+            slug         = "different_scale",
+            d            = 1,
+            pi_fn        = _make_gmm_pi_fn_1d([0.5, 0.5], [-5.0, 5.0], [0.25, 4.0]),
+            pi           = np.array([0.5, 0.5]),
+            mu           = np.array([-5.0, 5.0]),
+            sigma2       = np.array([0.25, 4.0]),
+            x_range      = [(-10.0, 10.0)],
+            proposal_sigma = 3.0,   # 1.5 × σ_max = 1.5 × 2
+            vanilla_type = "mixture_1d",
         ),
     ]

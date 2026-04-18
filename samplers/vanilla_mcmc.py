@@ -1,41 +1,46 @@
 import numpy as np
 import pymc as pm
 
+
 class VanillaMCMC:
     """
-    PyMC-based sampler for a Gaussian mixture target.
-
-    Uses pm.NormalMixture with NUTS (PyMC default). This serves as the
-    reference sampler to compare against TeleportingMCMC.
+    PyMC-based sampler for Gaussian mixture and multivariate Gaussian targets.
 
     Parameters
     ----------
-    pi : array-like, shape (K,)
-        Mixture weights (must sum to 1).
-    mu : array-like, shape (K,)
-        Component means.
-    sigma2 : array-like, shape (K,)
-        Component variances.
+    vanilla_type : str
+        "mixture_1d" — 1-D Gaussian mixture (pm.NormalMixture / pm.Normal).
+        "mvnormal"   — d-dimensional Gaussian (pm.MvNormal).
+    pi, mu, sigma2 : for "mixture_1d"
+    mu_vec, cov    : for "mvnormal"
     seed : int, optional
-        Random seed passed to pm.sample.
     """
-    def __init__(self, pi, mu, sigma2, seed=None):
-        self.pi = np.asarray(pi, dtype=float)
-        self.mu = np.asarray(mu, dtype=float)
-        self.sigma2 = np.asarray(sigma2, dtype=float)
-        self.seed = seed
+
+    def __init__(self, vanilla_type, pi=None, mu=None, sigma2=None,
+                 mu_vec=None, cov=None, seed=None):
+        self.vanilla_type = vanilla_type
+        self.pi     = np.asarray(pi,     dtype=float) if pi     is not None else None
+        self.mu     = np.asarray(mu,     dtype=float) if mu     is not None else None
+        self.sigma2 = np.asarray(sigma2, dtype=float) if sigma2 is not None else None
+        self.mu_vec = np.asarray(mu_vec, dtype=float) if mu_vec is not None else None
+        self.cov    = np.asarray(cov,    dtype=float) if cov    is not None else None
+        self.seed   = seed
 
     def run(self, num_draws=1000, num_chains=4, num_tune=500, progressbar=True):
         with pm.Model():
-            if len(self.pi) == 1:
-                pm.Normal("x", mu=self.mu[0], sigma=float(np.sqrt(self.sigma2[0])))
+            if self.vanilla_type == "mixture_1d":
+                if len(self.pi) == 1:
+                    pm.Normal("x", mu=self.mu[0],
+                              sigma=float(np.sqrt(self.sigma2[0])))
+                else:
+                    pm.NormalMixture("x", w=self.pi, mu=self.mu,
+                                     sigma=np.sqrt(self.sigma2))
+            elif self.vanilla_type == "mvnormal":
+                pm.MvNormal("x", mu=self.mu_vec, cov=self.cov,
+                            shape=len(self.mu_vec))
             else:
-                pm.NormalMixture(
-                    "x",
-                    w=self.pi,
-                    mu=self.mu,
-                    sigma=np.sqrt(self.sigma2),
-                )
+                raise ValueError(f"Unknown vanilla_type: {self.vanilla_type!r}")
+
             trace = pm.sample(
                 draws=num_draws,
                 tune=num_tune,
@@ -44,12 +49,15 @@ class VanillaMCMC:
                 progressbar=progressbar,
             )
 
-        # posterior["x"]: shape (num_chains, num_draws) → add param axis
-        samples = trace.posterior["x"].values[:, :, np.newaxis]  # (C, D, 1)
+        # posterior["x"]: (chains, draws) for 1-D  →  expand to (C, D, 1)
+        #                  (chains, draws, d) for d-D  →  keep as (C, D, d)
+        samples = trace.posterior["x"].values
+        if samples.ndim == 2:
+            samples = samples[:, :, np.newaxis]
 
         return {
-            "samples": samples,
-            "trace": trace,
+            "samples":   samples,
+            "trace":     trace,
             "num_draws": num_draws,
             "num_chains": num_chains,
         }

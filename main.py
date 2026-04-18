@@ -3,52 +3,69 @@ import os
 import numpy as np
 
 from scripts.generate_data import make_scenarios
-from samplers.parallel_tempering import ParallelTemperingMCMC, grid_search_temperatures
+from samplers.parallel_tempering import (
+    ParallelTemperingMCMC,
+    grid_search_temperatures,
+    optimize_temperatures,
+)
 from samplers.teleporting_mcmc import TeleportingMCMC, gaussian_q_density, gaussian_q_sample
 from samplers.vanilla_mcmc import VanillaMCMC
-from diagnostics import summary, plot_against_truth
+from diagnostics import summary, plot_comparison
 
 # ------------------------------------------------------------------
-# Results directory layout
+# Figure layout:
 #
 #   results/
-#     teleporting/figures/
-#     parallel_tempering/figures/
-#     vanilla/figures/
+#     figures/
+#       {slug}/comparison.png   ← all 3 methods side-by-side per scenario
 #     tvd_summary.csv
 # ------------------------------------------------------------------
 
-METHODS = ["teleporting", "parallel_tempering", "vanilla"]
+SLUGS = [
+    "standard", "correlated", "bimodal_moderate",
+    "bimodal_large", "unequal_weight", "different_scale",
+]
+
 
 def _setup_dirs():
-    for m in METHODS:
-        os.makedirs(f"results/{m}/figures", exist_ok=True)
+    for slug in SLUGS:
+        os.makedirs(f"results/figures/{slug}", exist_ok=True)
 
-def _fig_path(method, slug):
-    return f"results/{method}/figures/{slug}.png"
+
+def _fig_path(slug):
+    return f"results/figures/{slug}/comparison.png"
 
 
 # ------------------------------------------------------------------
-# Per-scenario runner — returns one row for the summary CSV
+# Per-scenario runner
 # ------------------------------------------------------------------
 
 def run_scenario(scenario, rng, num_iter=2000):
-    slug        = scenario["slug"]
-    pi_fn       = scenario["pi_fn"]
-    mu          = scenario["mu"]
-    sigma2      = scenario["sigma2"]
-    x_range     = scenario["x_range"]
-    warmup      = num_iter // 4
-    N_walkers   = 8
+    slug           = scenario["slug"]
+    pi_fn          = scenario["pi_fn"]
+    d              = scenario["d"]
+    x_range        = scenario["x_range"]
+    proposal_sigma = scenario["proposal_sigma"]
+    warmup         = num_iter // 4
+    N_walkers      = 8
 
-    # Proposal sigma scaled to the widest component
-    proposal_sigma = float(np.sqrt(sigma2.max()) * 1.5)
+    param_names = ["x"] if d == 1 else [f"x[{i}]" for i in range(d)]
+
+    # --- initial positions ---
+    if d == 1:
+        mu     = scenario["mu"]
+        sigma2 = scenario["sigma2"]
+        mode_idx = rng.integers(len(mu), size=N_walkers)
+        x0 = rng.normal(
+            loc=mu[mode_idx], scale=np.sqrt(sigma2.mean())
+        ).reshape(N_walkers, 1)
+    else:
+        # unimodal (correlated Gaussian): start walkers near origin with small spread
+        x0 = rng.normal(loc=0.0, scale=1.0, size=(N_walkers, d))
+
+    # Isotropic Gaussian proposal (works for all d)
     q_sample_fn  = lambda x, r: gaussian_q_sample(x, proposal_sigma, r)
     q_density_fn = lambda x, mean: gaussian_q_density(x, mean, proposal_sigma)
-
-    # Walkers spread across modes (or near mean for unimodal)
-    mode_idx = rng.integers(len(mu), size=N_walkers)
-    x0 = rng.normal(loc=mu[mode_idx], scale=np.sqrt(sigma2.mean())).reshape(N_walkers, 1)
 
     row = {"scenario": scenario["label"]}
 
@@ -65,60 +82,85 @@ def run_scenario(scenario, rng, num_iter=2000):
         f"teleport_proposal={t_result['teleport_proposal_rate']:.3f}  "
         f"teleport_accept={t_result['teleport_accept_rate']:.3f}"
     )
-    summary(t_chains, param_names=["x"])
-    tvd_t = plot_against_truth(
-        t_chains, pi_fn, param_name="x", x_range=x_range,
-        save_path=_fig_path("teleporting", slug),
-    )
-    print(f"    TVD = {tvd_t:.4f}")
-    row["tvd_teleporting"] = round(tvd_t, 4)
+    summary(t_chains, param_names=param_names)
 
     # ----------------------------------------------------------------
-    # 2. Parallel Tempering — grid search then full run
+    # 2. Parallel Tempering — grid search then adaptive refinement
     # ----------------------------------------------------------------
     print("\n  [Parallel Tempering — grid search]")
     best_betas, _ = grid_search_temperatures(
-        pi_fn=pi_fn,
-        x0_single=x0[0],
-        num_replicas_grid=[3, 4, 5],
-        beta_min_grid=[0.01, 0.05, 0.1, 0.2, 0.5],
-        num_iter=400,
-        proposal_scale=proposal_sigma,
-        rng=rng,
-        verbose=True,
+        pi_fn          = pi_fn,
+        x0_single      = x0[0],
+        num_replicas_grid = [3, 4, 5, 6, 7],
+        beta_min_grid  = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.4],
+        num_iter       = 400,
+        proposal_scale = proposal_sigma,
+        rng            = rng,
+        verbose        = True,
     )
 
-    print(f"\n  [Parallel Tempering — full run]")
+    print("\n  [Parallel Tempering — adaptive temperature refinement]")
+    best_betas, last_swap_rates = optimize_temperatures(
+        pi_fn              = pi_fn,
+        x0_single          = x0[0],
+        betas_init         = best_betas,
+        num_rounds         = 4,
+        num_iter_per_round = 400,
+        target_rate        = 0.25,
+        proposal_scale     = proposal_sigma,
+        rng                = rng,
+        verbose            = True,
+    )
+    print(f"    refined betas = {best_betas.round(4)}")
+    print(f"    swap rates    = {last_swap_rates.round(3)}")
+
+    print("\n  [Parallel Tempering — full run]")
     pt_x0      = np.tile(x0[0], (len(best_betas), 1))
-    pt_sampler = ParallelTemperingMCMC(pi_fn, best_betas, proposal_scale=proposal_sigma, rng=rng)
+    pt_sampler = ParallelTemperingMCMC(
+        pi_fn, best_betas, proposal_scale=proposal_sigma, rng=rng
+    )
     pt_result  = pt_sampler.run(pt_x0, num_iter=num_iter)
     cold_chain = pt_result["cold_samples"].transpose(1, 0, 2)[:, warmup:, :]
 
     swap_str = ", ".join(f"{r:.3f}" for r in pt_result["swap_acceptance_rates"])
     print(f"    betas={best_betas.round(3)}  swap_rates=[{swap_str}]")
-    summary(cold_chain, param_names=["x"])
-    tvd_pt = plot_against_truth(
-        cold_chain, pi_fn, param_name="x", x_range=x_range,
-        save_path=_fig_path("parallel_tempering", slug),
-    )
-    print(f"    TVD = {tvd_pt:.4f}")
-    row["tvd_parallel_tempering"] = round(tvd_pt, 4)
+    summary(cold_chain, param_names=param_names)
 
     # ----------------------------------------------------------------
     # 3. Vanilla MCMC (PyMC / NUTS)
     # ----------------------------------------------------------------
     print("\n  [Vanilla MCMC — PyMC NUTS]")
-    vanilla  = VanillaMCMC(pi=scenario["pi"], mu=mu, sigma2=sigma2, seed=221)
+    vanilla_kwargs = {"vanilla_type": scenario["vanilla_type"], "seed": 221}
+    if scenario["vanilla_type"] == "mixture_1d":
+        vanilla_kwargs.update(
+            pi=scenario["pi"], mu=scenario["mu"], sigma2=scenario["sigma2"]
+        )
+    else:  # mvnormal
+        vanilla_kwargs.update(mu_vec=scenario["mu_vec"], cov=scenario["cov"])
+
+    vanilla  = VanillaMCMC(**vanilla_kwargs)
     v_result = vanilla.run(
         num_draws=num_iter, num_chains=4, num_tune=warmup, progressbar=False
     )
-    summary(v_result["samples"], param_names=["x"])
-    tvd_v = plot_against_truth(
-        v_result["samples"], pi_fn, param_name="x", x_range=x_range,
-        save_path=_fig_path("vanilla", slug),
+    summary(v_result["samples"], param_names=param_names)
+
+    # ----------------------------------------------------------------
+    # Comparison figure (grouped by scenario)
+    # ----------------------------------------------------------------
+    method_chains = {
+        "teleporting":        t_chains,
+        "parallel_tempering": cold_chain,
+        "vanilla":            v_result["samples"],
+    }
+    tvds = plot_comparison(
+        method_chains=method_chains,
+        scenario=scenario,
+        save_path=_fig_path(slug),
     )
-    print(f"    TVD = {tvd_v:.4f}")
-    row["tvd_vanilla"] = round(tvd_v, 4)
+
+    for method in ["teleporting", "parallel_tempering", "vanilla"]:
+        avg_tvd = float(np.mean(tvds[method]))
+        row[f"tvd_{method}"] = round(avg_tvd, 4)
 
     return row
 
@@ -138,7 +180,6 @@ def main():
     for scenario in scenarios:
         print(f"\n{'='*68}")
         print(f"  {scenario['label']}")
-        print(f"  mu={scenario['mu']}  sigma2={scenario['sigma2'].round(2)}  pi={scenario['pi'].round(2)}")
         print(f"{'='*68}")
         row = run_scenario(scenario, rng, num_iter)
         all_rows.append(row)
@@ -149,9 +190,9 @@ def main():
         )
 
     # ----------------------------------------------------------------
-    # Final comparison table (console + CSV)
+    # Final comparison table + CSV
     # ----------------------------------------------------------------
-    col = 38
+    col = 42
     header = f"{'Scenario':<{col}}  {'Teleporting':>12}  {'PT':>8}  {'Vanilla':>8}"
     sep    = "-" * len(header)
 
@@ -169,15 +210,16 @@ def main():
     csv_path = "results/tvd_summary.csv"
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(
-            f, fieldnames=["scenario", "tvd_teleporting", "tvd_parallel_tempering", "tvd_vanilla"]
+            f,
+            fieldnames=[
+                "scenario", "tvd_teleporting",
+                "tvd_parallel_tempering", "tvd_vanilla",
+            ],
         )
         writer.writeheader()
         writer.writerows(all_rows)
     print(f"\n  Saved {csv_path}")
-
-    print("\n  Figures saved to:")
-    for m in METHODS:
-        print(f"    results/{m}/figures/")
+    print("\n  Figures saved to results/figures/*/comparison.png")
 
 
 if __name__ == "__main__":
