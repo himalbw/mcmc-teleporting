@@ -32,10 +32,46 @@ SLUGS = [
 
 def _setup_dirs():
     os.makedirs("results/comparison", exist_ok=True)
+    os.makedirs("results/hybrid", exist_ok=True)
 
 
 def _fig_path(slug):
     return f"results/comparison/{slug}.png"
+
+
+def _save_hybrid_fig(chains, scenario):
+    """Save per-scenario density figure(s) for the hybrid sampler."""
+    import matplotlib.pyplot as plt
+    from diagnostics import plot_against_truth
+
+    d    = scenario["d"]
+    slug = scenario["slug"]
+
+    fig, axes = plt.subplots(1, d, figsize=(6 * d, 4), squeeze=False)
+
+    for dim in range(d):
+        ax = axes[0, dim]
+        if d == 1:
+            pi_fn_1d  = scenario["pi_fn"]
+            x_range   = scenario["x_range"][0]
+            chains_1d = chains
+            dim_label = "x"
+        else:
+            pi_fn_1d  = scenario["marginal_pi_fns"][dim]
+            x_range   = scenario["x_range"][dim]
+            chains_1d = chains[:, :, dim:dim + 1]
+            dim_label = f"x[{dim}]"
+
+        tvd = plot_against_truth(chains_1d, pi_fn_1d,
+                                 x_range=x_range, param_name=dim_label, ax=ax)
+        ax.set_title(f"Hybrid (T+NUTS)  —  TVD = {tvd:.4f}", fontsize=10)
+
+    fig.suptitle(scenario["label"], fontsize=11, fontweight="bold")
+    fig.tight_layout()
+    path = f"results/hybrid/{slug}.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"    Saved {path}")
 
 
 # ------------------------------------------------------------------
@@ -115,6 +151,7 @@ def run_scenario(scenario, rng, num_iter=2000):
     summary(h_chains, param_names=param_names)
     row["ess_hybrid"]  = round(float(ess(h_chains).mean()),  1)
     row["rhat_hybrid"] = round(float(r_hat(h_chains).mean()), 3)
+    _save_hybrid_fig(h_chains, scenario)
 
     # ----------------------------------------------------------------
     # 4. Parallel Tempering — grid search then adaptive refinement
