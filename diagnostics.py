@@ -270,14 +270,19 @@ def plot_comparison(method_chains, scenario, save_path=None):
     import matplotlib.pyplot as plt
 
     d       = scenario["d"]
-    methods = ["teleporting", "parallel_tempering", "vanilla"]
-    labels  = ["Teleporting MCMC", "Parallel Tempering", "Vanilla NUTS"]
+    methods = ["teleporting", "hybrid", "parallel_tempering", "vanilla"]
+    labels  = ["Teleporting MCMC", "Hybrid (T+NUTS)", "Parallel Tempering", "Vanilla NUTS"]
 
-    fig, axes = plt.subplots(d, 3, figsize=(18, 4 * d), squeeze=False)
+    n_methods = len([m for m in methods if m in method_chains])
+    present   = [m for m in methods if m in method_chains]
+    p_labels  = [labels[methods.index(m)] for m in present]
 
-    tvds = {m: [] for m in methods}
+    fig, axes = plt.subplots(d, len(present),
+                             figsize=(6 * len(present), 4 * d), squeeze=False)
 
-    for col, (method, label) in enumerate(zip(methods, labels)):
+    tvds = {m: [] for m in present}
+
+    for col, (method, label) in enumerate(zip(present, p_labels)):
         chains = method_chains[method]
 
         for row in range(d):
@@ -345,8 +350,8 @@ def save_metrics_table(all_rows, save_dir):
 
     os.makedirs(save_dir, exist_ok=True)
 
-    methods     = ["teleporting", "parallel_tempering", "vanilla"]
-    method_lbls = ["Teleporting", "Parallel\nTempering", "Vanilla\nNUTS"]
+    methods     = ["teleporting", "hybrid", "parallel_tempering", "vanilla"]
+    method_lbls = ["Teleporting", "Hybrid\n(T+NUTS)", "Parallel\nTempering", "Vanilla\nNUTS"]
     metrics     = ["tvd",   "ess",  "rhat"]
     metric_lbls = ["TVD ↓", "ESS ↑", "R-hat"]
     lower_better = {"tvd": True, "ess": False, "rhat": True}

@@ -9,6 +9,7 @@ from samplers.parallel_tempering import (
     optimize_temperatures,
 )
 from samplers.teleporting_mcmc import TeleportingMCMC, gaussian_q_density, gaussian_q_sample
+from samplers.hybrid_teleporting_nuts import HybridTeleportingNUTS
 from samplers.vanilla_mcmc import VanillaMCMC
 from diagnostics import summary, plot_comparison, save_metrics_table, ess, r_hat
 
@@ -88,7 +89,35 @@ def run_scenario(scenario, rng, num_iter=2000):
     row["rhat_teleporting"] = round(float(r_hat(t_chains).mean()), 3)
 
     # ----------------------------------------------------------------
-    # 2. Parallel Tempering — grid search then adaptive refinement
+    # 2. Hybrid Teleporting-NUTS
+    # ----------------------------------------------------------------
+    print("\n  [Hybrid Teleporting-NUTS]")
+    init_step = proposal_sigma / 5.0   # reasonable starting point; adapted during warmup
+    h_sampler = HybridTeleportingNUTS(
+        pi_fn          = pi_fn,
+        q_sample_fn    = q_sample_fn,
+        q_density_fn   = q_density_fn,
+        init_step_size = init_step,
+        max_tree_depth = 5,
+        target_accept  = 0.65,
+        rng            = rng,
+    )
+    h_result = h_sampler.run(x0, num_iter, num_warmup=warmup)
+    h_chains  = h_result["samples"].transpose(1, 0, 2)[:, warmup:, :]
+
+    print(
+        f"    accept={h_result['acceptance_rate']:.3f}  "
+        f"teleport_proposal={h_result['teleport_proposal_rate']:.3f}  "
+        f"teleport_accept={h_result['teleport_accept_rate']:.3f}  "
+        f"nuts_local={h_result['local_nuts_rate']:.3f}  "
+        f"calibrated_ε={h_result['calibrated_step_size']:.4f}"
+    )
+    summary(h_chains, param_names=param_names)
+    row["ess_hybrid"]  = round(float(ess(h_chains).mean()),  1)
+    row["rhat_hybrid"] = round(float(r_hat(h_chains).mean()), 3)
+
+    # ----------------------------------------------------------------
+    # 4. Parallel Tempering — grid search then adaptive refinement
     # ----------------------------------------------------------------
     print("\n  [Parallel Tempering — grid search]")
     best_betas, _ = grid_search_temperatures(
@@ -132,7 +161,7 @@ def run_scenario(scenario, rng, num_iter=2000):
     row["rhat_parallel_tempering"] = round(float(r_hat(cold_chain).mean()), 3)
 
     # ----------------------------------------------------------------
-    # 3. Vanilla MCMC (PyMC / NUTS)
+    # 5. Vanilla MCMC (PyMC / NUTS)
     # ----------------------------------------------------------------
     print("\n  [Vanilla MCMC — PyMC NUTS]")
     vanilla_kwargs = {"vanilla_type": scenario["vanilla_type"], "seed": 221}
@@ -156,6 +185,7 @@ def run_scenario(scenario, rng, num_iter=2000):
     # ----------------------------------------------------------------
     method_chains = {
         "teleporting":        t_chains,
+        "hybrid":             h_chains,
         "parallel_tempering": cold_chain,
         "vanilla":            v_result["samples"],
     }
@@ -165,7 +195,7 @@ def run_scenario(scenario, rng, num_iter=2000):
         save_path=_fig_path(slug),
     )
 
-    for method in ["teleporting", "parallel_tempering", "vanilla"]:
+    for method in ["teleporting", "hybrid", "parallel_tempering", "vanilla"]:
         avg_tvd = float(np.mean(tvds[method]))
         row[f"tvd_{method}"] = round(avg_tvd, 4)
 
@@ -192,6 +222,7 @@ def main():
         all_rows.append(row)
         print(
             f"\n  TVD — Teleporting: {row['tvd_teleporting']:.4f}  |  "
+            f"Hybrid: {row['tvd_hybrid']:.4f}  |  "
             f"PT: {row['tvd_parallel_tempering']:.4f}  |  "
             f"Vanilla: {row['tvd_vanilla']:.4f}"
         )
@@ -200,7 +231,8 @@ def main():
     # Final comparison table + CSV
     # ----------------------------------------------------------------
     col = 42
-    header = f"{'Scenario':<{col}}  {'Teleporting':>12}  {'PT':>8}  {'Vanilla':>8}"
+    header = (f"{'Scenario':<{col}}  {'Teleporting':>12}  {'Hybrid':>8}"
+              f"  {'PT':>8}  {'Vanilla':>8}")
     sep    = "-" * len(header)
 
     print(f"\n{'='*68}")
@@ -210,8 +242,9 @@ def main():
     print(sep)
     for r in all_rows:
         print(
-            f"{r['scenario']:<{col}}  {r['tvd_teleporting']:>12.4f}  "
-            f"{r['tvd_parallel_tempering']:>8.4f}  {r['tvd_vanilla']:>8.4f}"
+            f"{r['scenario']:<{col}}  {r['tvd_teleporting']:>12.4f}"
+            f"  {r['tvd_hybrid']:>8.4f}"
+            f"  {r['tvd_parallel_tempering']:>8.4f}  {r['tvd_vanilla']:>8.4f}"
         )
 
     csv_path = "results/tvd_summary.csv"
@@ -219,7 +252,7 @@ def main():
         writer = csv.DictWriter(
             f,
             fieldnames=[
-                "scenario", "tvd_teleporting",
+                "scenario", "tvd_teleporting", "tvd_hybrid",
                 "tvd_parallel_tempering", "tvd_vanilla",
             ],
             extrasaction="ignore",

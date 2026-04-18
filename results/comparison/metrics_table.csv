@@ -1,7 +1,7 @@
-scenario,tvd_teleporting,tvd_parallel_tempering,tvd_vanilla,ess_teleporting,ess_parallel_tempering,ess_vanilla,rhat_teleporting,rhat_parallel_tempering,rhat_vanilla
-Standard Gaussian,0.0387,0.033,0.0104,772.1,372.3,3538.4,1.011,1.001,1.001
-Correlated Gaussian (ρ=0.9),0.1338,0.1271,0.0178,122.8,124.7,2233.1,1.056,1.0,1.002
-Bimodal — moderate (μ=±5),0.1326,0.2265,0.2536,432.8,20.4,2902.1,1.038,1.0,4.82
-Bimodal — large (μ=±15),0.4032,0.4751,0.4161,392.8,8.4,3591.5,1.013,1.176,14.023
-Unequal-weight bimodal (0.9 / 0.1),0.1149,0.4493,0.1002,356.3,11.6,3283.8,1.022,1.051,1.001
-Different-scale bimodal (σ=0.5 vs σ=2),0.1831,0.2477,0.2798,161.1,80.0,2740.0,1.055,1.07,4.481
+scenario,tvd_teleporting,tvd_hybrid,tvd_parallel_tempering,tvd_vanilla,ess_teleporting,ess_hybrid,ess_parallel_tempering,ess_vanilla,rhat_teleporting,rhat_hybrid,rhat_parallel_tempering,rhat_vanilla
+Standard Gaussian,0.0387,0.0495,0.0585,0.0104,772.1,1072.5,408.0,3538.4,1.011,1.013,1.0,1.001
+Correlated Gaussian (ρ=0.9),0.1414,0.4633,0.0921,0.0178,114.9,89.3,80.5,2233.1,1.089,1.332,1.005,1.002
+Bimodal — moderate (μ=±5),0.1147,0.0986,0.1987,0.2536,411.6,373.4,7.4,2902.1,1.026,1.02,1.003,4.82
+Bimodal — large (μ=±15),0.4077,0.4026,0.506,0.4161,340.8,386.2,7.6,3591.5,1.033,1.02,1.069,14.023
+Unequal-weight bimodal (0.9 / 0.1),0.1201,0.1163,0.3474,0.1002,347.3,369.3,14.6,3283.8,1.041,1.017,1.174,1.001
+Different-scale bimodal (σ=0.5 vs σ=2),0.1908,0.1999,0.2647,0.2798,246.8,239.5,50.6,2740.0,1.078,1.049,1.0,4.481
