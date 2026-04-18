@@ -318,3 +318,110 @@ def plot_comparison(method_chains, scenario, save_path=None):
 
     plt.close(fig)
     return tvds
+
+
+# ------------------------------------------------------------------
+# Metrics comparison table  (all scenarios × all methods)
+# ------------------------------------------------------------------
+
+def save_metrics_table(all_rows, save_dir):
+    """
+    Save a CSV and a colour-coded PNG table to `save_dir`.
+
+    The PNG has three side-by-side sub-tables (TVD ↓, ESS ↑, R-hat).
+    The best cell per row is shaded green; the worst is shaded red.
+
+    Parameters
+    ----------
+    all_rows : list of dict
+        Each dict must contain keys:
+          scenario,
+          tvd_{method}, ess_{method}, rhat_{method}
+          for method in {teleporting, parallel_tempering, vanilla}.
+    save_dir : str
+    """
+    import csv as _csv
+    import matplotlib.pyplot as plt
+
+    os.makedirs(save_dir, exist_ok=True)
+
+    methods     = ["teleporting", "parallel_tempering", "vanilla"]
+    method_lbls = ["Teleporting", "Parallel\nTempering", "Vanilla\nNUTS"]
+    metrics     = ["tvd",   "ess",  "rhat"]
+    metric_lbls = ["TVD ↓", "ESS ↑", "R-hat"]
+    lower_better = {"tvd": True, "ess": False, "rhat": True}
+
+    # ---- CSV ----
+    csv_path   = os.path.join(save_dir, "metrics_table.csv")
+    fieldnames = ["scenario"] + [
+        f"{metric}_{method}"
+        for metric in metrics
+        for method in methods
+    ]
+    with open(csv_path, "w", newline="") as f:
+        writer = _csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(all_rows)
+
+    # ---- Figure ----
+    scenarios   = [r["scenario"] for r in all_rows]
+    n_scenarios = len(scenarios)
+
+    fig, axes = plt.subplots(
+        1, 3, figsize=(20, max(3, 0.7 * n_scenarios + 2))
+    )
+
+    for ax, metric, metric_lbl in zip(axes, metrics, metric_lbls):
+        raw = [[r.get(f"{metric}_{m}", float("nan")) for m in methods]
+               for r in all_rows]
+
+        if metric in ("tvd", "rhat"):
+            fmt = [[f"{v:.4f}" if not np.isnan(v) else "—" for v in row]
+                   for row in raw]
+        else:  # ess
+            fmt = [[f"{v:.0f}" if not np.isnan(v) else "—" for v in row]
+                   for row in raw]
+
+        lb = lower_better[metric]
+        best_cols  = [int(np.nanargmin(row) if lb else np.nanargmax(row))
+                      for row in raw]
+        worst_cols = [int(np.nanargmax(row) if lb else np.nanargmin(row))
+                      for row in raw]
+
+        ax.axis("off")
+        tbl = ax.table(
+            cellText=fmt,
+            rowLabels=scenarios,
+            colLabels=method_lbls,
+            loc="center",
+            cellLoc="center",
+        )
+        tbl.auto_set_font_size(False)
+        tbl.set_fontsize(9)
+        tbl.scale(1, 2.0)
+
+        # Header row styling
+        for col in range(len(methods)):
+            tbl[0, col].set_facecolor("#cfd8dc")
+            tbl[0, col].set_text_props(fontweight="bold")
+
+        # Cell colour coding
+        for row_idx, (best, worst) in enumerate(zip(best_cols, worst_cols)):
+            for col_idx in range(len(methods)):
+                cell = tbl[row_idx + 1, col_idx]
+                if col_idx == best:
+                    cell.set_facecolor("#c8e6c9")   # light green
+                elif col_idx == worst:
+                    cell.set_facecolor("#ffcdd2")   # light red
+
+        ax.set_title(metric_lbl, fontsize=11, fontweight="bold", pad=12)
+
+    fig.suptitle("Method Comparison Across Scenarios",
+                 fontsize=13, fontweight="bold", y=1.02)
+    fig.tight_layout()
+
+    png_path = os.path.join(save_dir, "metrics_table.png")
+    fig.savefig(png_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"    Saved {png_path}")
+    print(f"    Saved {csv_path}")

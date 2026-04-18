@@ -10,15 +10,17 @@ from samplers.parallel_tempering import (
 )
 from samplers.teleporting_mcmc import TeleportingMCMC, gaussian_q_density, gaussian_q_sample
 from samplers.vanilla_mcmc import VanillaMCMC
-from diagnostics import summary, plot_comparison
+from diagnostics import summary, plot_comparison, save_metrics_table, ess, r_hat
 
 # ------------------------------------------------------------------
-# Figure layout:
+# Output layout:
 #
 #   results/
-#     figures/
-#       {slug}/comparison.png   ← all 3 methods side-by-side per scenario
-#     tvd_summary.csv
+#     comparison/
+#       {slug}.png            ← 1×3 (or 2×3) per-scenario comparison
+#       metrics_table.png     ← colour-coded TVD / ESS / R-hat summary
+#       metrics_table.csv
+#     tvd_summary.csv         ← backward-compat TVD-only CSV
 # ------------------------------------------------------------------
 
 SLUGS = [
@@ -28,12 +30,11 @@ SLUGS = [
 
 
 def _setup_dirs():
-    for slug in SLUGS:
-        os.makedirs(f"results/figures/{slug}", exist_ok=True)
+    os.makedirs("results/comparison", exist_ok=True)
 
 
 def _fig_path(slug):
-    return f"results/figures/{slug}/comparison.png"
+    return f"results/comparison/{slug}.png"
 
 
 # ------------------------------------------------------------------
@@ -83,6 +84,8 @@ def run_scenario(scenario, rng, num_iter=2000):
         f"teleport_accept={t_result['teleport_accept_rate']:.3f}"
     )
     summary(t_chains, param_names=param_names)
+    row["ess_teleporting"]  = round(float(ess(t_chains).mean()),  1)
+    row["rhat_teleporting"] = round(float(r_hat(t_chains).mean()), 3)
 
     # ----------------------------------------------------------------
     # 2. Parallel Tempering — grid search then adaptive refinement
@@ -125,6 +128,8 @@ def run_scenario(scenario, rng, num_iter=2000):
     swap_str = ", ".join(f"{r:.3f}" for r in pt_result["swap_acceptance_rates"])
     print(f"    betas={best_betas.round(3)}  swap_rates=[{swap_str}]")
     summary(cold_chain, param_names=param_names)
+    row["ess_parallel_tempering"]  = round(float(ess(cold_chain).mean()),  1)
+    row["rhat_parallel_tempering"] = round(float(r_hat(cold_chain).mean()), 3)
 
     # ----------------------------------------------------------------
     # 3. Vanilla MCMC (PyMC / NUTS)
@@ -143,6 +148,8 @@ def run_scenario(scenario, rng, num_iter=2000):
         num_draws=num_iter, num_chains=4, num_tune=warmup, progressbar=False
     )
     summary(v_result["samples"], param_names=param_names)
+    row["ess_vanilla"]  = round(float(ess(v_result["samples"]).mean()),  1)
+    row["rhat_vanilla"] = round(float(r_hat(v_result["samples"]).mean()), 3)
 
     # ----------------------------------------------------------------
     # Comparison figure (grouped by scenario)
@@ -215,11 +222,18 @@ def main():
                 "scenario", "tvd_teleporting",
                 "tvd_parallel_tempering", "tvd_vanilla",
             ],
+            extrasaction="ignore",
         )
         writer.writeheader()
         writer.writerows(all_rows)
     print(f"\n  Saved {csv_path}")
-    print("\n  Figures saved to results/figures/*/comparison.png")
+
+    # ----------------------------------------------------------------
+    # Metrics comparison table
+    # ----------------------------------------------------------------
+    print("\n  Generating metrics comparison table...")
+    save_metrics_table(all_rows, save_dir="results/comparison")
+    print("\n  Outputs saved to results/comparison/")
 
 
 if __name__ == "__main__":

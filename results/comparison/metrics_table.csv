@@ -1,0 +1,7 @@
+scenario,tvd_teleporting,tvd_parallel_tempering,tvd_vanilla,ess_teleporting,ess_parallel_tempering,ess_vanilla,rhat_teleporting,rhat_parallel_tempering,rhat_vanilla
+Standard Gaussian,0.0387,0.033,0.0104,772.1,372.3,3538.4,1.011,1.001,1.001
+Correlated Gaussian (ρ=0.9),0.1338,0.1271,0.0178,122.8,124.7,2233.1,1.056,1.0,1.002
+Bimodal — moderate (μ=±5),0.1326,0.2265,0.2536,432.8,20.4,2902.1,1.038,1.0,4.82
+Bimodal — large (μ=±15),0.4032,0.4751,0.4161,392.8,8.4,3591.5,1.013,1.176,14.023
+Unequal-weight bimodal (0.9 / 0.1),0.1149,0.4493,0.1002,356.3,11.6,3283.8,1.022,1.051,1.001
+Different-scale bimodal (σ=0.5 vs σ=2),0.1831,0.2477,0.2798,161.1,80.0,2740.0,1.055,1.07,4.481
