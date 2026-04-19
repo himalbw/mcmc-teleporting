@@ -250,13 +250,14 @@ def plot_against_truth(
 
 def plot_comparison(method_chains, scenario, save_path=None):
     """
-    Create one figure per scenario: columns = methods, rows = dimensions.
+    Create one figure per scenario arranged in a 2×2 grid (for 1-D targets)
+    or a n_methods×d grid (for multi-dimensional targets).
 
     Parameters
     ----------
     method_chains : dict
-        Keys: "teleporting", "parallel_tempering", "vanilla"
-        Values: ndarray (C, D, d)
+        Keys: "teleporting", "hybrid", "parallel_tempering", "vanilla"
+        Values: ndarray (C, N, d)
     scenario : dict
         Must contain: label, d, x_range (list of d tuples).
         For d==1: pi_fn.
@@ -273,31 +274,41 @@ def plot_comparison(method_chains, scenario, save_path=None):
     methods = ["teleporting", "hybrid", "parallel_tempering", "vanilla"]
     labels  = ["Teleporting MCMC", "Hybrid (T+NUTS)", "Parallel Tempering", "Vanilla NUTS"]
 
-    n_methods = len([m for m in methods if m in method_chains])
-    present   = [m for m in methods if m in method_chains]
-    p_labels  = [labels[methods.index(m)] for m in present]
+    present  = [m for m in methods if m in method_chains]
+    p_labels = [labels[methods.index(m)] for m in present]
+    n_present = len(present)
 
-    fig, axes = plt.subplots(d, len(present),
-                             figsize=(6 * len(present), 4 * d), squeeze=False)
+    # Layout: 2×2 for 1-D targets; n_methods×d for higher-d targets
+    if d == 1:
+        nrows, ncols = 2, 2
+        figsize = (12, 8)
+    else:
+        nrows, ncols = n_present, d
+        figsize = (6 * d, 4 * n_present)
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=figsize, squeeze=False)
 
     tvds = {m: [] for m in present}
 
-    for col, (method, label) in enumerate(zip(present, p_labels)):
+    for mi, (method, label) in enumerate(zip(present, p_labels)):
         chains = method_chains[method]
 
-        for row in range(d):
-            ax = axes[row, col]
+        for dim in range(d):
+            if d == 1:
+                ax = axes[mi // 2, mi % 2]
+            else:
+                ax = axes[mi, dim]
 
             if d == 1:
                 pi_fn_1d  = scenario["pi_fn"]
                 x_range   = scenario["x_range"][0]
-                chains_1d = chains                        # (C, D, 1)
+                chains_1d = chains
                 dim_label = "x"
             else:
-                pi_fn_1d  = scenario["marginal_pi_fns"][row]
-                x_range   = scenario["x_range"][row]
-                chains_1d = chains[:, :, row:row + 1]    # (C, D, 1)
-                dim_label = f"x[{row}]"
+                pi_fn_1d  = scenario["marginal_pi_fns"][dim]
+                x_range   = scenario["x_range"][dim]
+                chains_1d = chains[:, :, dim:dim + 1]
+                dim_label = f"x[{dim}]"
 
             tvd = plot_against_truth(
                 chains_1d, pi_fn_1d,
@@ -305,11 +316,10 @@ def plot_comparison(method_chains, scenario, save_path=None):
             )
             tvds[method].append(tvd)
 
-            title = label if row == 0 else ""
-            if title:
-                ax.set_title(f"{title}\nTVD = {tvd:.4f}", fontsize=10)
+            if d == 1:
+                ax.set_title(f"{label}\nTVD = {tvd:.4f}", fontsize=10)
             else:
-                ax.set_title(f"TVD = {tvd:.4f}", fontsize=10)
+                ax.set_title(f"{label}  —  {dim_label}\nTVD = {tvd:.4f}", fontsize=10)
 
     fig.suptitle(scenario["label"], fontsize=13, fontweight="bold", y=1.01)
     fig.tight_layout()
@@ -326,6 +336,72 @@ def plot_comparison(method_chains, scenario, save_path=None):
 
 
 # ------------------------------------------------------------------
+# Target distribution overview figure
+# ------------------------------------------------------------------
+
+def plot_target_distributions(scenarios, save_path=None):
+    """
+    2×3 panel figure showing all target distributions.
+    1-D scenarios are shown as density curves; 2-D as filled contours.
+
+    Parameters
+    ----------
+    scenarios : list of dict  (from make_scenarios)
+    save_path : str, optional
+    """
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+
+    for ax, scenario in zip(axes.ravel(), scenarios):
+        d = scenario["d"]
+
+        if d == 1:
+            x_range = scenario["x_range"][0]
+            grid    = np.linspace(x_range[0], x_range[1], 600)
+            dx      = grid[1] - grid[0]
+            y_raw   = np.array([scenario["pi_fn"](np.array([v])) for v in grid])
+            y       = y_raw / (y_raw.sum() * dx)
+
+            ax.plot(grid, y, color="steelblue", lw=2.5)
+            ax.fill_between(grid, y, alpha=0.18, color="steelblue")
+            ax.set_xlabel("x", fontsize=10)
+            ax.set_ylabel("Density", fontsize=10)
+            ax.set_xlim(x_range)
+            ax.set_ylim(bottom=0)
+
+        else:
+            xr = scenario["x_range"][0]
+            yr = scenario["x_range"][1]
+            gx = np.linspace(xr[0], xr[1], 120)
+            gy = np.linspace(yr[0], yr[1], 120)
+            GX, GY = np.meshgrid(gx, gy)
+            Z = np.array([
+                [scenario["pi_fn"](np.array([xi, yi])) for xi in gx]
+                for yi in gy
+            ])
+            cf = ax.contourf(GX, GY, Z, levels=20, cmap="Blues")
+            ax.contour(GX, GY, Z, levels=10, colors="steelblue", alpha=0.4, linewidths=0.8)
+            fig.colorbar(cf, ax=ax, shrink=0.85, label="Density")
+            ax.set_xlabel("x[0]", fontsize=10)
+            ax.set_ylabel("x[1]", fontsize=10)
+
+        ax.set_title(scenario["label"], fontsize=11, fontweight="bold", pad=6)
+
+    fig.suptitle("Target Distributions", fontsize=14, fontweight="bold")
+    fig.tight_layout()
+
+    if save_path is not None:
+        os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"    Saved {save_path}")
+    else:
+        plt.show()
+
+    plt.close(fig)
+
+
+# ------------------------------------------------------------------
 # Metrics comparison table  (all scenarios × all methods)
 # ------------------------------------------------------------------
 
@@ -333,7 +409,10 @@ def save_metrics_table(all_rows, save_dir):
     """
     Save a CSV and a colour-coded PNG table to `save_dir`.
 
-    The PNG has three side-by-side sub-tables (TVD ↓, ESS ↑, R-hat).
+    The PNG has five sub-tables in a 2×3 grid:
+      TVD ↓ | ESS ↑ | R-hat  (top row)
+      Runtime (s) ↓ | ESS/sec ↑ | (empty)  (bottom row)
+
     The best cell per row is shaded green; the worst is shaded red.
 
     Parameters
@@ -341,8 +420,9 @@ def save_metrics_table(all_rows, save_dir):
     all_rows : list of dict
         Each dict must contain keys:
           scenario,
-          tvd_{method}, ess_{method}, rhat_{method}
-          for method in {teleporting, parallel_tempering, vanilla}.
+          tvd_{method}, ess_{method}, rhat_{method},
+          time_{method}, ess_per_sec_{method}
+          for method in {teleporting, hybrid, parallel_tempering, vanilla}.
     save_dir : str
     """
     import csv as _csv
@@ -352,15 +432,14 @@ def save_metrics_table(all_rows, save_dir):
 
     methods     = ["teleporting", "hybrid", "parallel_tempering", "vanilla"]
     method_lbls = ["Teleporting", "Hybrid\n(T+NUTS)", "Parallel\nTempering", "Vanilla\nNUTS"]
-    metrics     = ["tvd",   "ess",  "rhat"]
-    metric_lbls = ["TVD ↓", "ESS ↑", "R-hat"]
-    lower_better = {"tvd": True, "ess": False, "rhat": True}
+
+    all_metrics = ["tvd", "ess", "rhat", "time", "ess_per_sec"]
 
     # ---- CSV ----
     csv_path   = os.path.join(save_dir, "metrics_table.csv")
     fieldnames = ["scenario"] + [
         f"{metric}_{method}"
-        for metric in metrics
+        for metric in all_metrics
         for method in methods
     ]
     with open(csv_path, "w", newline="") as f:
@@ -368,29 +447,36 @@ def save_metrics_table(all_rows, save_dir):
         writer.writeheader()
         writer.writerows(all_rows)
 
-    # ---- Figure ----
+    # ---- Figure: 2×3 grid, last cell hidden ----
     scenarios   = [r["scenario"] for r in all_rows]
     n_scenarios = len(scenarios)
+    row_h       = max(4, 0.7 * n_scenarios + 2)
 
-    fig, axes = plt.subplots(
-        1, 3, figsize=(20, max(3, 0.7 * n_scenarios + 2))
-    )
+    fig, axes_grid = plt.subplots(2, 3, figsize=(22, row_h * 2))
+    axes_grid[1, 2].axis("off")   # unused cell
 
-    for ax, metric, metric_lbl in zip(axes, metrics, metric_lbls):
+    panel_specs = [
+        ("tvd",         "TVD ↓",         True,  ".4f"),
+        ("ess",         "ESS ↑",         False, ".0f"),
+        ("rhat",        "R-hat",         True,  ".3f"),
+        ("time",        "Runtime (s) ↓", True,  ".1f"),
+        ("ess_per_sec", "ESS / sec ↑",   False, ".1f"),
+    ]
+    ax_order = [
+        axes_grid[0, 0], axes_grid[0, 1], axes_grid[0, 2],
+        axes_grid[1, 0], axes_grid[1, 1],
+    ]
+
+    for ax, (metric, metric_lbl, lower_better, fmt_spec) in zip(ax_order, panel_specs):
         raw = [[r.get(f"{metric}_{m}", float("nan")) for m in methods]
                for r in all_rows]
 
-        if metric in ("tvd", "rhat"):
-            fmt = [[f"{v:.4f}" if not np.isnan(v) else "—" for v in row]
-                   for row in raw]
-        else:  # ess
-            fmt = [[f"{v:.0f}" if not np.isnan(v) else "—" for v in row]
-                   for row in raw]
+        fmt = [[f"{v:{fmt_spec}}" if not np.isnan(v) else "—" for v in row]
+               for row in raw]
 
-        lb = lower_better[metric]
-        best_cols  = [int(np.nanargmin(row) if lb else np.nanargmax(row))
+        best_cols  = [int(np.nanargmin(row) if lower_better else np.nanargmax(row))
                       for row in raw]
-        worst_cols = [int(np.nanargmax(row) if lb else np.nanargmin(row))
+        worst_cols = [int(np.nanargmax(row) if lower_better else np.nanargmin(row))
                       for row in raw]
 
         ax.axis("off")
@@ -405,24 +491,22 @@ def save_metrics_table(all_rows, save_dir):
         tbl.set_fontsize(9)
         tbl.scale(1, 2.0)
 
-        # Header row styling
         for col in range(len(methods)):
             tbl[0, col].set_facecolor("#cfd8dc")
             tbl[0, col].set_text_props(fontweight="bold")
 
-        # Cell colour coding
         for row_idx, (best, worst) in enumerate(zip(best_cols, worst_cols)):
             for col_idx in range(len(methods)):
                 cell = tbl[row_idx + 1, col_idx]
                 if col_idx == best:
-                    cell.set_facecolor("#c8e6c9")   # light green
+                    cell.set_facecolor("#c8e6c9")
                 elif col_idx == worst:
-                    cell.set_facecolor("#ffcdd2")   # light red
+                    cell.set_facecolor("#ffcdd2")
 
         ax.set_title(metric_lbl, fontsize=11, fontweight="bold", pad=12)
 
     fig.suptitle("Method Comparison Across Scenarios",
-                 fontsize=13, fontweight="bold", y=1.02)
+                 fontsize=13, fontweight="bold", y=1.01)
     fig.tight_layout()
 
     png_path = os.path.join(save_dir, "metrics_table.png")

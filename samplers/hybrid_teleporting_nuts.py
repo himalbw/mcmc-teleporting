@@ -51,14 +51,20 @@ def _grad_log_pi(pi_fn, x, eps=1e-5):
 # Leapfrog
 # ------------------------------------------------------------------
 
-def _leapfrog(q, p, grad_fn, step_size, n_steps):
-    """n_steps leapfrog steps; returns (q_new, p_new)."""
+def _leapfrog(q, p, grad_fn, step_size, n_steps, mass_inv=None):
+    """
+    n_steps leapfrog steps with optional mass matrix.
+
+    mass_inv : ndarray (d, d) or None
+        M⁻¹ = Σ (target covariance).  When None, M = I (standard).
+        Position update: q += ε · M⁻¹ p.
+    """
     q, p = q.copy(), p.copy()
     p   += 0.5 * step_size * grad_fn(q)
     for _ in range(n_steps - 1):
-        q += step_size * p
+        q += step_size * (mass_inv @ p if mass_inv is not None else p)
         p += step_size * grad_fn(q)
-    q   += step_size * p
+    q   += step_size * (mass_inv @ p if mass_inv is not None else p)
     p   += 0.5 * step_size * grad_fn(q)
     return q, p
 
@@ -67,12 +73,18 @@ def _leapfrog(q, p, grad_fn, step_size, n_steps):
 # NUTS tree  (Hoffman & Gelman 2014, Algorithm 3)
 # ------------------------------------------------------------------
 
-def _hamiltonian(log_pi_fn, q, p):
+def _hamiltonian(log_pi_fn, q, p, mass_inv=None):
+    """
+    H(q, p) = −log π(q) + K(p).
+    K(p) = p^T M⁻¹ p / 2  when mass_inv = M⁻¹ = Σ;
+           ||p||² / 2       when mass_inv = None (M = I).
+    """
     lp = log_pi_fn(q)
-    return (-lp + 0.5 * float(np.dot(p, p))) if np.isfinite(lp) else np.inf
+    K  = 0.5 * float(p @ (mass_inv @ p) if mass_inv is not None else np.dot(p, p))
+    return (-lp + K) if np.isfinite(lp) else np.inf
 
 
-def _build_tree(q, p, log_u, v, depth, step_size, log_pi_fn, grad_fn, H0, rng):
+def _build_tree(q, p, log_u, v, depth, step_size, log_pi_fn, grad_fn, H0, rng, mass_inv=None):
     """
     Recursively build a NUTS binary subtree.
 
@@ -96,8 +108,8 @@ def _build_tree(q, p, log_u, v, depth, step_size, log_pi_fn, grad_fn, H0, rng):
     """
     if depth == 0:
         # One leapfrog step
-        q_new, p_new = _leapfrog(q, p, grad_fn, v * step_size, 1)
-        H_new        = _hamiltonian(log_pi_fn, q_new, p_new)
+        q_new, p_new = _leapfrog(q, p, grad_fn, v * step_size, 1, mass_inv=mass_inv)
+        H_new        = _hamiltonian(log_pi_fn, q_new, p_new, mass_inv=mass_inv)
 
         # Slice condition: accept leaf if exp(-H_new) >= exp(log_u), i.e., -H_new >= log_u
         n     = 1 if (np.isfinite(H_new) and -H_new >= log_u) else 0
@@ -112,7 +124,8 @@ def _build_tree(q, p, log_u, v, depth, step_size, log_pi_fn, grad_fn, H0, rng):
     (q_m, p_m, q_p, p_p,
      q_s, n_s, s_s,
      alpha_s, n_alpha_s) = _build_tree(
-        q, p, log_u, v, depth - 1, step_size, log_pi_fn, grad_fn, H0, rng
+        q, p, log_u, v, depth - 1, step_size, log_pi_fn, grad_fn, H0, rng,
+        mass_inv=mass_inv,
     )
 
     if s_s:
@@ -120,13 +133,15 @@ def _build_tree(q, p, log_u, v, depth, step_size, log_pi_fn, grad_fn, H0, rng):
             (q_m, p_m, _, _,
              q_s2, n_s2, s_s2,
              alpha_s2, n_alpha_s2) = _build_tree(
-                q_m, p_m, log_u, v, depth - 1, step_size, log_pi_fn, grad_fn, H0, rng
+                q_m, p_m, log_u, v, depth - 1, step_size, log_pi_fn, grad_fn, H0, rng,
+                mass_inv=mass_inv,
             )
         else:
             (_, _, q_p, p_p,
              q_s2, n_s2, s_s2,
              alpha_s2, n_alpha_s2) = _build_tree(
-                q_p, p_p, log_u, v, depth - 1, step_size, log_pi_fn, grad_fn, H0, rng
+                q_p, p_p, log_u, v, depth - 1, step_size, log_pi_fn, grad_fn, H0, rng,
+                mass_inv=mass_inv,
             )
 
         # Metropolis update: accept proposal from second subtree
@@ -147,9 +162,19 @@ def _build_tree(q, p, log_u, v, depth, step_size, log_pi_fn, grad_fn, H0, rng):
     return q_m, p_m, q_p, p_p, q_s, n_s, s_s, alpha_s, n_alpha_s
 
 
-def nuts_step(q0, pi_fn, grad_fn, step_size, max_tree_depth, rng):
+def nuts_step(q0, pi_fn, grad_fn, step_size, max_tree_depth, rng,
+              mass_inv=None, L_prec=None):
     """
-    One NUTS transition from q0.
+    One NUTS transition from q0, with optional mass matrix preconditioning.
+
+    Parameters
+    ----------
+    mass_inv : ndarray (d, d) or None
+        M⁻¹ = Σ (target covariance).  Passed to leapfrog / Hamiltonian.
+    L_prec   : ndarray (d, d) or None
+        Cholesky factor of M = Σ⁻¹ (precision), so M = L_prec @ L_prec^T.
+        Momentum is sampled as p = L_prec @ z, z ~ N(0, I), giving p ~ N(0, M).
+        When None, p ~ N(0, I) (standard, M = I).
 
     Returns
     -------
@@ -157,10 +182,10 @@ def nuts_step(q0, pi_fn, grad_fn, step_size, max_tree_depth, rng):
     avg_alpha  : float        — average acceptance prob (for dual averaging)
     """
     d  = q0.size
-    p0 = rng.normal(size=d)
+    p0 = (L_prec @ rng.standard_normal(d)) if L_prec is not None else rng.normal(size=d)
 
     log_pi_fn = lambda x: _log_pi(pi_fn, x)
-    H0        = _hamiltonian(log_pi_fn, q0, p0)
+    H0        = _hamiltonian(log_pi_fn, q0, p0, mass_inv=mass_inv)
 
     # log-slice threshold: log u = log(U) - H0  so u ~ Uniform[0, exp(-H0)]
     log_u = np.log(rng.uniform() + 1e-300) - H0
@@ -181,13 +206,15 @@ def nuts_step(q0, pi_fn, grad_fn, step_size, max_tree_depth, rng):
             (q_m, p_m, _, _, q_cand, n_cand, s_cand,
              a, na) = _build_tree(
                 q_m, p_m, log_u, v, depth,
-                step_size, log_pi_fn, grad_fn, H0, rng
+                step_size, log_pi_fn, grad_fn, H0, rng,
+                mass_inv=mass_inv,
             )
         else:
             (_, _, q_p, p_p, q_cand, n_cand, s_cand,
              a, na) = _build_tree(
                 q_p, p_p, log_u, v, depth,
-                step_size, log_pi_fn, grad_fn, H0, rng
+                step_size, log_pi_fn, grad_fn, H0, rng,
+                mass_inv=mass_inv,
             )
 
         if s_cand and n_cand > 0:
@@ -213,7 +240,8 @@ def nuts_step(q0, pi_fn, grad_fn, step_size, max_tree_depth, rng):
 
 def calibrate_step_size(q0, pi_fn, grad_fn, init_step,
                          target_accept=0.65, n_steps=80,
-                         max_rounds=8, rng=None):
+                         max_rounds=8, rng=None,
+                         mass_inv=None, L_prec=None):
     """
     Find a leapfrog step size ε that achieves `target_accept` ± 0.10.
 
@@ -244,7 +272,8 @@ def calibrate_step_size(q0, pi_fn, grad_fn, init_step,
         q_run  = q.copy()
         for _ in range(n_steps):
             q_run, alpha, _ = nuts_step(
-                q_run, pi_fn, grad_fn, eps, max_tree_depth=3, rng=rng
+                q_run, pi_fn, grad_fn, eps, max_tree_depth=3, rng=rng,
+                mass_inv=mass_inv, L_prec=L_prec,
             )
             alphas.append(alpha)
         avg = float(np.mean(alphas))
@@ -290,7 +319,19 @@ class HybridTeleportingNUTS:
 
     def __init__(self, pi_fn, q_sample_fn, q_density_fn,
                  init_step_size=0.1, max_tree_depth=5,
-                 target_accept=0.65, grad_eps=1e-5, rng=None):
+                 target_accept=0.65, grad_eps=1e-5, rng=None,
+                 mass_inv=None):
+        """
+        Parameters
+        ----------
+        mass_inv : ndarray (d, d) or None
+            Inverse mass matrix M⁻¹ = Σ (target covariance from Hessian
+            preconditioning).  When provided:
+              • NUTS leapfrog uses q += ε · Σ p
+              • NUTS kinetic energy uses K = p^T Σ p / 2
+              • Momentum is sampled as p ~ N(0, Σ⁻¹) via Cholesky of Σ⁻¹
+            When None, standard M = I is used.
+        """
         self.pi_fn          = pi_fn
         self.q_sample_fn    = q_sample_fn
         self.q_density_fn   = q_density_fn
@@ -299,6 +340,10 @@ class HybridTeleportingNUTS:
         self.target_accept  = float(target_accept)
         self.grad_eps       = float(grad_eps)
         self.rng            = rng if rng is not None else np.random.default_rng()
+        self.mass_inv       = mass_inv
+        # Cholesky of precision M = Σ⁻¹, used for momentum sampling p ~ N(0, M)
+        self.L_prec = (np.linalg.cholesky(np.linalg.inv(mass_inv))
+                       if mass_inv is not None else None)
 
     def _compute_Z(self, x, z):
         N = len(x)
@@ -372,6 +417,8 @@ class HybridTeleportingNUTS:
             target_accept = self.target_accept,
             n_steps       = calib_n,
             rng           = self.rng,
+            mass_inv      = self.mass_inv,
+            L_prec        = self.L_prec,
         )
 
         history            = [x.copy()]
@@ -411,6 +458,8 @@ class HybridTeleportingNUTS:
                     step_size      = step_size,
                     max_tree_depth = self.max_tree_depth,
                     rng            = self.rng,
+                    mass_inv       = self.mass_inv,
+                    L_prec         = self.L_prec,
                 )
                 x[j]        = x_j_new
                 total_moved += 1   # NUTS is internally MH-correct

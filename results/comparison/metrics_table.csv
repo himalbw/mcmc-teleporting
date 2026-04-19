@@ -1,7 +1,7 @@
-scenario,tvd_teleporting,tvd_hybrid,tvd_parallel_tempering,tvd_vanilla,ess_teleporting,ess_hybrid,ess_parallel_tempering,ess_vanilla,rhat_teleporting,rhat_hybrid,rhat_parallel_tempering,rhat_vanilla
-Standard Gaussian,0.0387,0.0495,0.0585,0.0104,772.1,1072.5,408.0,3538.4,1.011,1.013,1.0,1.001
-Correlated Gaussian (ρ=0.9),0.1414,0.4633,0.0921,0.0178,114.9,89.3,80.5,2233.1,1.089,1.332,1.005,1.002
-Bimodal — moderate (μ=±5),0.1147,0.0986,0.1987,0.2536,411.6,373.4,7.4,2902.1,1.026,1.02,1.003,4.82
-Bimodal — large (μ=±15),0.4077,0.4026,0.506,0.4161,340.8,386.2,7.6,3591.5,1.033,1.02,1.069,14.023
-Unequal-weight bimodal (0.9 / 0.1),0.1201,0.1163,0.3474,0.1002,347.3,369.3,14.6,3283.8,1.041,1.017,1.174,1.001
-Different-scale bimodal (σ=0.5 vs σ=2),0.1908,0.1999,0.2647,0.2798,246.8,239.5,50.6,2740.0,1.078,1.049,1.0,4.481
+scenario,tvd_teleporting,tvd_hybrid,tvd_parallel_tempering,tvd_vanilla,ess_teleporting,ess_hybrid,ess_parallel_tempering,ess_vanilla,rhat_teleporting,rhat_hybrid,rhat_parallel_tempering,rhat_vanilla,time_teleporting,time_hybrid,time_parallel_tempering,time_vanilla,ess_per_sec_teleporting,ess_per_sec_hybrid,ess_per_sec_parallel_tempering,ess_per_sec_vanilla
+Standard Gaussian,0.0206,0.035,0.0291,0.0096,2108.1,1971.6,957.0,9265.9,1.004,1.005,1.0,1.0,1.17,1.33,0.66,1.05,1801.8,1482.4,1450.0,8824.7
+Correlated Gaussian (ρ=0.9),0.0863,0.518,0.0997,0.0124,269.0,nan,140.5,4950.1,1.024,3.668,1.002,1.001,1.79,2.53,2.25,1.45,150.3,nan,62.4,3413.9
+Bimodal — moderate (μ=±5),0.0775,0.0727,0.1705,0.2517,919.6,900.7,30.3,8519.0,1.007,1.013,1.006,4.749,1.26,1.35,0.77,0.83,729.8,667.2,39.4,10263.9
+Bimodal — large (μ=±15),0.3466,0.3473,0.4501,0.3684,964.9,989.9,12.5,8753.4,1.013,1.009,1.016,13.972,1.21,1.35,0.81,0.69,797.4,733.3,15.4,12686.1
+Unequal-weight bimodal (0.9 / 0.1),0.0853,0.0976,0.2915,0.1004,803.7,1000.2,32.7,8657.1,1.009,1.013,1.121,1.0,1.23,1.37,0.89,0.68,653.4,730.1,36.7,12731.0
+Different-scale bimodal (σ=0.5 vs σ=2),0.1565,0.1275,0.2145,0.2274,479.9,425.4,137.2,27.7,1.029,1.011,1.032,2.197,1.21,1.35,0.83,0.92,396.6,315.1,165.3,30.1

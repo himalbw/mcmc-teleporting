@@ -1,5 +1,6 @@
 import csv
 import os
+import time
 import numpy as np
 
 from scripts.generate_data import make_scenarios
@@ -8,10 +9,12 @@ from samplers.parallel_tempering import (
     grid_search_temperatures,
     optimize_temperatures,
 )
-from samplers.teleporting_mcmc import TeleportingMCMC, gaussian_q_density, gaussian_q_sample
+from samplers.teleporting_mcmc import (
+    TeleportingMCMC, gaussian_q_density, gaussian_q_sample, make_hessian_q,
+)
 from samplers.hybrid_teleporting_nuts import HybridTeleportingNUTS
 from samplers.vanilla_mcmc import VanillaMCMC
-from diagnostics import summary, plot_comparison, save_metrics_table, ess, r_hat
+from diagnostics import summary, plot_comparison, save_metrics_table, plot_target_distributions, ess, r_hat
 
 # ------------------------------------------------------------------
 # Output layout:
@@ -78,7 +81,7 @@ def _save_hybrid_fig(chains, scenario):
 # Per-scenario runner
 # ------------------------------------------------------------------
 
-def run_scenario(scenario, rng, num_iter=2000):
+def run_scenario(scenario, rng, num_iter=5000):
     slug           = scenario["slug"]
     pi_fn          = scenario["pi_fn"]
     d              = scenario["d"]
@@ -101,9 +104,18 @@ def run_scenario(scenario, rng, num_iter=2000):
         # unimodal (correlated Gaussian): start walkers near origin with small spread
         x0 = rng.normal(loc=0.0, scale=1.0, size=(N_walkers, d))
 
-    # Isotropic Gaussian proposal (works for all d)
-    q_sample_fn  = lambda x, r: gaussian_q_sample(x, proposal_sigma, r)
-    q_density_fn = lambda x, mean: gaussian_q_density(x, mean, proposal_sigma)
+    # Reference distribution q — Hessian-preconditioned (Laplace) if flagged,
+    # otherwise the default isotropic Gaussian.
+    if scenario.get("use_hessian_q", False):
+        print("  [Building Hessian-preconditioned q (Laplace approx.)]")
+        q_sample_fn, q_density_fn, mode, q_cov = make_hessian_q(pi_fn, x0[0])
+        print(f"    mode = {mode.round(4)}")
+        print(f"    q covariance =\n{q_cov.round(4)}")
+        nuts_mass_inv = q_cov   # pass Σ as NUTS inverse mass matrix
+    else:
+        q_sample_fn   = lambda x, r: gaussian_q_sample(x, proposal_sigma, r)
+        q_density_fn  = lambda x, mean: gaussian_q_density(x, mean, proposal_sigma)
+        nuts_mass_inv = None
 
     row = {"scenario": scenario["label"]}
 
@@ -112,7 +124,9 @@ def run_scenario(scenario, rng, num_iter=2000):
     # ----------------------------------------------------------------
     print("  [Teleporting MCMC]")
     t_sampler = TeleportingMCMC(pi_fn, q_sample_fn, q_density_fn, rng=rng)
+    _t0 = time.perf_counter()
     t_result  = t_sampler.run(x0, num_iter)
+    row["time_teleporting"] = round(time.perf_counter() - _t0, 2)
     t_chains  = t_result["samples"].transpose(1, 0, 2)[:, warmup:, :]
 
     print(
@@ -137,8 +151,11 @@ def run_scenario(scenario, rng, num_iter=2000):
         max_tree_depth = 5,
         target_accept  = 0.65,
         rng            = rng,
+        mass_inv       = nuts_mass_inv,
     )
+    _t0 = time.perf_counter()
     h_result = h_sampler.run(x0, num_iter, num_warmup=warmup)
+    row["time_hybrid"] = round(time.perf_counter() - _t0, 2)
     h_chains  = h_result["samples"].transpose(1, 0, 2)[:, warmup:, :]
 
     print(
@@ -157,6 +174,7 @@ def run_scenario(scenario, rng, num_iter=2000):
     # 4. Parallel Tempering — grid search then adaptive refinement
     # ----------------------------------------------------------------
     print("\n  [Parallel Tempering — grid search]")
+    _t0 = time.perf_counter()
     best_betas, _ = grid_search_temperatures(
         pi_fn          = pi_fn,
         x0_single      = x0[0],
@@ -189,6 +207,7 @@ def run_scenario(scenario, rng, num_iter=2000):
         pi_fn, best_betas, proposal_scale=proposal_sigma, rng=rng
     )
     pt_result  = pt_sampler.run(pt_x0, num_iter=num_iter)
+    row["time_parallel_tempering"] = round(time.perf_counter() - _t0, 2)
     cold_chain = pt_result["cold_samples"].transpose(1, 0, 2)[:, warmup:, :]
 
     swap_str = ", ".join(f"{r:.3f}" for r in pt_result["swap_acceptance_rates"])
@@ -210,12 +229,22 @@ def run_scenario(scenario, rng, num_iter=2000):
         vanilla_kwargs.update(mu_vec=scenario["mu_vec"], cov=scenario["cov"])
 
     vanilla  = VanillaMCMC(**vanilla_kwargs)
+    _t0 = time.perf_counter()
     v_result = vanilla.run(
         num_draws=num_iter, num_chains=4, num_tune=warmup, progressbar=False
     )
+    row["time_vanilla"] = round(time.perf_counter() - _t0, 2)
     summary(v_result["samples"], param_names=param_names)
     row["ess_vanilla"]  = round(float(ess(v_result["samples"]).mean()),  1)
     row["rhat_vanilla"] = round(float(r_hat(v_result["samples"]).mean()), 3)
+
+    # ----------------------------------------------------------------
+    # ESS per second
+    # ----------------------------------------------------------------
+    for method in ["teleporting", "hybrid", "parallel_tempering", "vanilla"]:
+        t = row[f"time_{method}"]
+        e = row[f"ess_{method}"]
+        row[f"ess_per_sec_{method}"] = round(e / t, 1) if t > 0 else float("nan")
 
     # ----------------------------------------------------------------
     # Comparison figure (grouped by scenario)
@@ -247,8 +276,11 @@ def main():
     _setup_dirs()
 
     rng       = np.random.default_rng(221)
-    num_iter  = 2000
+    num_iter  = 5000
     scenarios = make_scenarios(rng)
+
+    print("Generating target distribution figure...")
+    plot_target_distributions(scenarios, save_path="results/target_distributions.png")
 
     all_rows = []
     for scenario in scenarios:
@@ -289,8 +321,11 @@ def main():
         writer = csv.DictWriter(
             f,
             fieldnames=[
-                "scenario", "tvd_teleporting", "tvd_hybrid",
-                "tvd_parallel_tempering", "tvd_vanilla",
+                "scenario",
+                "tvd_teleporting", "tvd_hybrid", "tvd_parallel_tempering", "tvd_vanilla",
+                "time_teleporting", "time_hybrid", "time_parallel_tempering", "time_vanilla",
+                "ess_per_sec_teleporting", "ess_per_sec_hybrid",
+                "ess_per_sec_parallel_tempering", "ess_per_sec_vanilla",
             ],
             extrasaction="ignore",
         )

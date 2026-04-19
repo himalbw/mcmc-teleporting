@@ -94,7 +94,8 @@ def make_scenarios(rng):
                 _make_norm_marginal_pi_fn(0.0, 1.0),   # x[1] ~ N(0, 1)
             ],
             proposal_sigma = 4.5,   # 1.5 × σ_max = 1.5 × 3
-            vanilla_type = "mvnormal",
+            vanilla_type   = "mvnormal",
+            use_hessian_q  = True,  # isotropic q fails here; use Laplace reference
         ),
 
         # ---- 3. Bimodal — moderate separation ----
