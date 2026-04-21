@@ -29,6 +29,9 @@ SLUGS = [
     "bimodal_large", "unequal_weight", "different_scale",
 ]
 
+NUM_ITER = 5000
+WARMUP_FRACTION = 0.25
+
 
 def _setup_dirs():
     os.makedirs("results/comparison", exist_ok=True)
@@ -78,13 +81,13 @@ def _save_hybrid_fig(chains, scenario):
 # Per-scenario runner
 # ------------------------------------------------------------------
 
-def run_scenario(scenario, rng, num_iter=2000):
+def run_scenario(scenario, rng, num_iter=NUM_ITER):
     slug           = scenario["slug"]
     pi_fn          = scenario["pi_fn"]
     d              = scenario["d"]
     x_range        = scenario["x_range"]
     proposal_sigma = scenario["proposal_sigma"]
-    warmup         = num_iter // 4
+    warmup         = int(num_iter * WARMUP_FRACTION)
     N_walkers      = 8
 
     param_names = ["x"] if d == 1 else [f"x[{i}]" for i in range(d)]
@@ -247,8 +250,11 @@ def main():
     _setup_dirs()
 
     rng       = np.random.default_rng(221)
-    num_iter  = 2000
+    num_iter  = NUM_ITER
+    warmup    = int(num_iter * WARMUP_FRACTION)
     scenarios = make_scenarios(rng)
+
+    print(f"Running {num_iter} iterations with {warmup} warmup iterations.")
 
     all_rows = []
     for scenario in scenarios:
