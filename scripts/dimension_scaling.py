@@ -99,14 +99,21 @@ def run_vanilla_nuts(dim, num_iter, warmup):
             "x",
             logp=logp,
             shape=dim,
-            initval=np.full(dim, -MODE_SEPARATION),
+            initval=np.zeros(dim),
         )
+
+        init_rng = np.random.default_rng(SEED + dim)
+        initvals = [
+            {"x": init_rng.normal(loc=0.0, scale=6.0, size=dim)}
+            for _ in range(4)
+        ]
 
         trace = pm.sample(
             draws=num_iter,
             tune=warmup,
             chains=4,
             cores=1,
+            initvals=initvals,
             random_seed=SEED,
             progressbar=False,
             compute_convergence_checks=False,
