@@ -153,3 +153,61 @@ def make_scenarios(rng):
             vanilla_type = "mixture_1d",
         ),
     ]
+
+
+# ------------------------------------------------------------------
+# Dimension-scaling scenarios
+# ------------------------------------------------------------------
+
+def _make_product_bimodal_pi_fn(d):
+    """
+    d-dimensional product of ½N(-5,1) + ½N(5,1) marginals.
+
+    Returns
+    -------
+    pi_fn        : callable  x (d,) -> float   (joint density)
+    marginal_pi_fn : callable  x (1,) -> float  (per-dim marginal)
+    """
+    marginal_pi_fn = _make_gmm_pi_fn_1d([0.5, 0.5], [-5.0, 5.0], [1.0, 1.0])
+
+    if d == 1:
+        return marginal_pi_fn, marginal_pi_fn
+
+    def pi_fn(x):
+        x = np.asarray(x, dtype=float).ravel()
+        val = 1.0
+        for xi in x:
+            val *= marginal_pi_fn(np.array([xi]))
+        return float(val)
+
+    return pi_fn, marginal_pi_fn
+
+
+def make_scaling_scenarios(dims=(1, 2, 5, 10, 20)):
+    """
+    Return one scenario dict per entry in `dims`.
+    Target: d-dimensional product of ½N(-5,1)+½N(5,1) marginals.
+    """
+    scenarios = []
+    for d in dims:
+        pi_fn, marginal_pi_fn = _make_product_bimodal_pi_fn(d)
+        sc = dict(
+            label          = f"Product bimodal (d={d})",
+            slug           = f"bimodal_d{d}",
+            d              = d,
+            pi_fn          = pi_fn,
+            marginal_pi_fn = marginal_pi_fn,
+            x_range        = [(-10.0, 10.0)] * d,
+            proposal_sigma = 1.5,
+            vanilla_type   = "mixture_1d" if d == 1 else "mixture_nd",
+        )
+        if d == 1:
+            sc.update(
+                pi     = np.array([0.5, 0.5]),
+                mu     = np.array([-5.0, 5.0]),
+                sigma2 = np.array([1.0, 1.0]),
+            )
+        else:
+            sc["nd_d"] = d
+        scenarios.append(sc)
+    return scenarios

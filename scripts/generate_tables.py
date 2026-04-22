@@ -26,9 +26,10 @@ import math
 import os
 
 # ── paths ──────────────────────────────────────────────────────────────────────
-ROOT       = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CSV_PATH   = os.path.join(ROOT, "results", "comparison", "metrics_table.csv")
-OUTPUT_DIR = os.path.join(ROOT, "results", "tables")
+ROOT         = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CSV_PATH     = os.path.join(ROOT, "results", "comparison", "metrics_table.csv")
+SCALING_CSV  = os.path.join(ROOT, "results", "scaling",    "scaling_results.csv")
+OUTPUT_DIR   = os.path.join(ROOT, "results", "tables")
 
 # ── constants ──────────────────────────────────────────────────────────────────
 METHODS     = ["teleporting", "hybrid", "parallel_tempering", "vanilla"]
@@ -211,6 +212,57 @@ def runtime_table(data, include_correlated=True):
     return _preamble() + caption + "\n" + _tabular(rows)
 
 
+# ── scaling-experiment tables ──────────────────────────────────────────────────
+
+def _scaling_tabular(rows):
+    """Booktabs tabular with a $d$ first column."""
+    hdr = " & ".join([r"\textbf{$d$}"] + METHOD_HDRS) + r" \\"
+    body = "\n".join(" & ".join(r) + r" \\" for r in rows)
+    return (
+        r"\begin{tabular}{lcccc}" + "\n"
+        r"\toprule" + "\n"
+        + hdr + "\n"
+        r"\midrule" + "\n"
+        + body + "\n"
+        r"\bottomrule" + "\n"
+        r"\end{tabular}"
+    )
+
+
+def scaling_table(metric="tvd"):
+    """
+    Generate a LaTeX table for the dimension-scaling CSV.
+
+    Parameters
+    ----------
+    metric : "tvd", "ess", or "rhat"
+    """
+    if not os.path.exists(SCALING_CSV):
+        print(f"  Warning: {SCALING_CSV} not found — run main.py first.")
+        return None
+
+    with open(SCALING_CSV, newline="", encoding="utf-8") as f:
+        rows_data = list(csv.DictReader(f))
+
+    _lower_better = {"tvd": True,  "ess": False, "rhat": True}
+    _fmt_spec     = {"tvd": ".3f", "ess": ".0f", "rhat": ".3f"}
+    _captions     = {
+        "tvd":  r"\textbf{Marginal TVD by dimension} (lower is better)\\[3pt]",
+        "ess":  r"\textbf{ESS by dimension} (higher is better)\\[3pt]",
+        "rhat": r"\textbf{$\hat{R}$ by dimension} (closer to 1 is better)\\[3pt]",
+    }
+
+    table_rows = []
+    for row in rows_data:
+        d_str  = f"$d={row['d']}$"
+        values = [_safe_float(row.get(f"{metric}_{m}")) for m in METHODS]
+        cells  = _color_cells(values, _fmt_spec[metric],
+                              lower_better=_lower_better[metric])
+        table_rows.append([d_str] + cells)
+
+    return _preamble() + _captions[metric] + "\n" + _scaling_tabular(table_rows)
+
+
 # ── main ───────────────────────────────────────────────────────────────────────
 
 def main():
@@ -231,6 +283,12 @@ def main():
         "ess_main.tex":     ess_table(data, include_correlated=False),
         "runtime_all.tex":  runtime_table(data, include_correlated=True),
     }
+
+    # Scaling-experiment tables (only if the CSV exists)
+    for metric in ("tvd", "ess", "rhat"):
+        content = scaling_table(metric)
+        if content is not None:
+            tables[f"scaling_{metric}.tex"] = content
 
     for fname, content in tables.items():
         path = os.path.join(OUTPUT_DIR, fname)
