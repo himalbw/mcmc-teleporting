@@ -61,6 +61,8 @@ def _autocorr(x):
     fft_len = 1 << (2 * n - 1).bit_length()
     f   = np.fft.rfft(x, n=fft_len)
     acf = np.fft.irfft(f * np.conj(f))[:n]
+    if acf[0] == 0.0:          # chain has zero variance — perfectly stuck
+        return np.zeros(n)
     acf /= acf[0]
     return acf
 
