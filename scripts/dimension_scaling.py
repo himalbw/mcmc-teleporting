@@ -21,7 +21,7 @@ from samplers.teleporting_mcmc import (
 )
 
 
-DIMS = [1, 2, 5, 10, 20]
+DIMS = list(range(1, 21))
 NUM_ITER = 5000
 WARMUP_FRACTION = 0.25
 N_WALKERS = 8
@@ -71,6 +71,10 @@ def average_marginal_tvd(chains, x_range=(-10.0, 10.0), n_grid=500):
 
     for dim_idx in range(chains.shape[2]):
         samples = chains[:, :, dim_idx].ravel()
+        if np.std(samples) < 1e-10:
+            # Chain is completely stuck — treat as a point mass, TVD ≈ 0.5
+            tvds.append(0.5)
+            continue
         p_kde = gaussian_kde(samples, bw_method="scott")(grid)
         tvds.append(0.5 * np.sum(np.abs(p_true - p_kde)) * dx)
 
@@ -221,46 +225,25 @@ def save_dimension_table(rows):
         writer.writeheader()
         writer.writerows(rows)
 
-    raw = [[r[f"tvd_{m}"] for m in methods] for r in rows]
-    cell_text = [
-        [f"{v:.4f}" if not np.isnan(v) else "--" for v in row]
-        for row in raw
-    ]
-    row_labels = [f"{r['dimension']}D" for r in rows]
+    dims = [r["dimension"] for r in rows]
+    colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
+    markers = ["o", "s", "^", "D"]
 
-    fig, ax = plt.subplots(figsize=(8, max(2.8, 0.55 * len(rows) + 1.6)))
-    ax.axis("off")
-    table = ax.table(
-        cellText=cell_text,
-        rowLabels=row_labels,
-        colLabels=labels,
-        loc="center",
-        cellLoc="center",
-    )
-    table.auto_set_font_size(False)
-    table.set_fontsize(10)
-    table.scale(1, 1.8)
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+    for method, label, color, marker in zip(methods, labels, colors, markers):
+        tvds = [r[f"tvd_{method}"] for r in rows]
+        ax.plot(dims, tvds, label=label, color=color, marker=marker,
+                linewidth=2, markersize=6)
 
-    for col in range(len(methods)):
-        table[0, col].set_facecolor("#cfd8dc")
-        table[0, col].set_text_props(fontweight="bold")
-
-    for row_idx, row in enumerate(raw):
-        finite = np.array(row, dtype=float)
-        if np.all(np.isnan(finite)):
-            continue
-        best = int(np.nanargmin(finite))
-        worst = int(np.nanargmax(finite))
-        for col_idx in range(len(methods)):
-            cell = table[row_idx + 1, col_idx]
-            if col_idx == best:
-                cell.set_facecolor("#c8e6c9")
-            elif col_idx == worst:
-                cell.set_facecolor("#ffcdd2")
-
-    ax.set_title("Average marginal TVD by dimension (lower is better)", pad=16)
-    png_path = os.path.join(RESULT_DIR, "tvd_by_dimension.png")
+    ax.set_xlabel("Dimension", fontsize=12)
+    ax.set_ylabel("Average marginal TVD", fontsize=12)
+    ax.set_title("TVD vs. dimension (lower is better)", fontsize=13)
+    ax.legend(fontsize=10)
+    ax.set_xticks(dims)
+    ax.grid(True, linestyle="--", alpha=0.4)
     fig.tight_layout()
+
+    png_path = os.path.join(RESULT_DIR, "tvd_by_dimension.png")
     fig.savefig(png_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
