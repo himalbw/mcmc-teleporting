@@ -81,35 +81,42 @@ def true_marginal(grid):
             0.5 * _norm.pdf(grid, +5.0, SIGMA_MODE))
 
 
+INIT_SCALE = 2.0  # 8× the mode width — walkers start far from the target
+
 def make_initial_walkers(dim, N, rng):
-    # Start walkers inside the modes (scale = SIGMA_MODE)
-    # so that the initial TVD is near zero and we measure mixing quality,
-    # not just the ability to find the modes.
+    # Start walkers well outside the narrow modes so samplers must find them.
+    # With SIGMA_MODE=0.25 and INIT_SCALE=2.0, initial positions are ~8σ off.
+    # MH (σ_prop=0.5) cannot navigate to the mode; NUTS follows the gradient.
     modes = rng.choice([-5.0, 5.0], size=N)
-    return rng.normal(loc=modes[:, np.newaxis], scale=SIGMA_MODE,
+    return rng.normal(loc=modes[:, np.newaxis], scale=INIT_SCALE,
                       size=(N, dim))
 
 
 # ── TVD ───────────────────────────────────────────────────────────────────────
 
-def average_marginal_tvd(chains, n_grid=500):
+def average_marginal_tvd(chains, n_grid=1000):
     from scipy.stats import gaussian_kde
     chains = np.asarray(chains, dtype=float)
     if chains.ndim == 2:
         chains = chains[:, :, np.newaxis]
-    # narrow modes: capture ±8σ from each mode centre
-    lo = -5.0 - 8 * SIGMA_MODE
-    hi =  5.0 + 8 * SIGMA_MODE
+    # Wide grid to capture both modes and any unconverged walkers
+    lo = -5.0 - 10 * SIGMA_MODE
+    hi =  5.0 + 10 * SIGMA_MODE
     grid   = np.linspace(lo, hi, n_grid)
     dx     = grid[1] - grid[0]
     p_true = true_marginal(grid)
     tvds   = []
     for k in range(chains.shape[2]):
         samples = chains[:, :, k].ravel()
-        if np.std(samples) < 1e-10:
+        s = np.std(samples)
+        if s < 1e-10:
             tvds.append(0.5)
             continue
-        p_kde = gaussian_kde(samples, bw_method="scott")(grid)
+        # Use a fixed absolute bandwidth = SIGMA_MODE so narrow modes are
+        # resolved correctly.  Scott's rule gives ~1.1 for bimodal data
+        # (dominated by mode separation), which smears the narrow peaks.
+        bw = SIGMA_MODE / s   # gaussian_kde multiplies factor × std(data)
+        p_kde = gaussian_kde(samples, bw_method=bw)(grid)
         tvds.append(0.5 * np.sum(np.abs(p_true - p_kde)) * dx)
     return float(np.mean(tvds))
 
